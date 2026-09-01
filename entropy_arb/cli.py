@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""entropy-arb entry point.
+"""entropy-arb CLI — the package's command-line entry point.
 
     # collect minute data only — no strategy, no credentials needed
-    python3 main.py --record-only --symbol SNDK --hedge lighter-rh
+    entropy-arb --record-only --symbol SNDK --hedge lighter-rh
+    # equivalent: python -m entropy_arb --record-only --symbol SNDK --hedge lighter-rh
 
     # LIVE trading: real orders, real money (needs .env credentials)
-    python3 main.py --symbol SNDK --hedge lighter-rh
+    entropy-arb --symbol SNDK --hedge lighter-rh
 
 --symbol and --hedge are required on every start: the markets you trade are
 an explicit decision, not a config default. Venue-native symbol names can
@@ -33,8 +34,8 @@ from entropy_arb.config import HEDGE_VENUES, ConfigError, load_config
 from entropy_arb.engine import Engine
 
 
-def setup_logging(level: str, log_file: str = None,
-                  extra_handler: logging.Handler = None) -> None:
+def setup_logging(level: str, log_file: str | None = None,
+                  extra_handler: logging.Handler | None = None) -> None:
     root = logging.getLogger()
     root.setLevel(getattr(logging, level, logging.INFO))
     fmt = logging.Formatter(
@@ -124,13 +125,7 @@ def main() -> None:
 
     log_buffer = None
     if use_dashboard:
-        try:
-            from entropy_arb.dashboard import BufferLogHandler
-        except ImportError:
-            print("`rich` is not installed — falling back to plain logs "
-                  "(pip install -r requirements.txt)", file=sys.stderr)
-            use_dashboard = False
-    if use_dashboard:
+        from entropy_arb.dashboard import BufferLogHandler
         log_buffer = BufferLogHandler()
         setup_logging(cfg.log_level, log_file=cfg.log_file,
                       extra_handler=log_buffer)

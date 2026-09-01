@@ -63,7 +63,7 @@ midline − lower  ────────────────────�
 ```bash
 git clone https://github.com/your-quantguy/entropy-arb.git && cd entropy-arb
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # 数据采集只需要这些
+pip install -e .          # 数据采集只需要这些
 
 cp config.example.yaml config.yaml       # 策略配置（阈值、规模、风控）
 cp .env.example .env                     # 密钥——交易必填
@@ -80,7 +80,7 @@ cp .env.example .env                     # 密钥——交易必填
 **第一步：先采集数据**（不需要任何密钥）：
 
 ```bash
-python3 main.py --record-only --symbol SNDK --hedge lighter-rh
+entropy-arb --record-only --symbol SNDK --hedge lighter-rh
 ```
 
 至少运行几个小时（最好一整天——溢价存在日内规律），数据写入
@@ -99,8 +99,8 @@ python3 tools/analyze.py
 交易所最小名义的水平开始：
 
 ```bash
-pip install -r requirements-live.txt
-python3 main.py --symbol SNDK --hedge lighter-rh
+pip install -e ".[live]"
+entropy-arb --symbol SNDK --hedge lighter-rh
 ```
 
 不带 `--record-only` 运行时，只要两边行情就绪且溢价越过带宽，就会立即
@@ -219,7 +219,8 @@ FROM read_csv('logs/minutes.csv');
 ## 目录结构
 
 ```
-main.py                  入口（--record-only，默认即实盘）
+entropy_arb/cli.py       CLI 入口 — entropy-arb / python -m entropy_arb
+entropy_arb/__main__.py  python -m entropy_arb 启动器
 entropy_arb/config.py    YAML + .env 配置契约与校验
 entropy_arb/book.py      订单簿 + 含手续费的套利规模计算
 entropy_arb/feeds.py     官方 HL ws + zkLighter ws 行情

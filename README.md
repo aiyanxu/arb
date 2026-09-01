@@ -70,7 +70,7 @@ that is what the recorder and analyzer are for.
 ```bash
 git clone https://github.com/your-quantguy/entropy-arb.git && cd entropy-arb
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # data collection needs only this
+pip install -e .          # data collection needs only this
 
 cp config.example.yaml config.yaml       # the strategy (thresholds, sizing, risk)
 cp .env.example .env                     # credentials — required to trade
@@ -88,7 +88,7 @@ simulated fills.
 **1. Collect data first** (no credentials needed):
 
 ```bash
-python3 main.py --record-only --symbol SNDK --hedge lighter-rh
+entropy-arb --record-only --symbol SNDK --hedge lighter-rh
 ```
 
 Let it run for at least a few hours (a day is better — premiums have
@@ -107,8 +107,8 @@ fired, and a ready-to-paste `thresholds:` block for `config.yaml`.
 the smallest position caps that clear the venue minimums:
 
 ```bash
-pip install -r requirements-live.txt
-python3 main.py --symbol SNDK --hedge lighter-rh
+pip install -e ".[live]"
+entropy-arb --symbol SNDK --hedge lighter-rh
 ```
 
 Running without `--record-only` sends real orders immediately once both
@@ -237,7 +237,8 @@ errors), credentials in `.env`, and the markets on the command line
 ## Layout
 
 ```
-main.py                  entry point (--record-only, or live by default)
+entropy_arb/cli.py       CLI entry — entropy-arb / python -m entropy_arb
+entropy_arb/__main__.py  python -m entropy_arb launcher
 entropy_arb/config.py    YAML + .env contract, validation
 entropy_arb/book.py      order books + fee-aware crossing/sizing math
 entropy_arb/feeds.py     official HL ws + zkLighter ws book feeds

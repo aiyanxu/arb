@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "entropy-arb"
+description = "Two-venue perp arbitrage bot — Entropy vs Lighter mainnet / Lighter Robinhood / trade.xyz"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "yourQuantGuy" }]
+keywords = ["arbitrage", "hyperliquid", "lighter", "perpetual", "trading"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+
+dependencies = [
+    "aiohttp>=3.9",
+    "websockets>=12.0",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "rich>=13.0",
+    "duckdb>=1.0",
+]
+
+[project.optional-dependencies]
+live = [
+    # transaction signing SDKs — needed only to trade; record-only works without them
+    "hyperliquid-python-sdk>=0.9",
+    "eth-account>=0.10",
+    # Lighter signing. Installs from the SDK's current main; for reproducible
+    # deploys pin a commit: ...lighter-python.git@<commit-sha>
+    "lighter-sdk @ git+https://github.com/elliottech/lighter-python.git",
+]
+
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+entropy-arb = "entropy_arb.cli:main"
+
+[tool.setuptools]
+packages = ["entropy_arb"]
+
+[tool.setuptools.dynamic]
+version = { attr = "entropy_arb.__version__" }
