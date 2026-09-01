@@ -15,9 +15,13 @@
 #   lighter      Lighter mainnet            (USDC, 0 bps taker)
 #   lighter-rh   Lighter Robinhood chain    (USDG, 0 bps taker)
 #   tradexyz     Hyperliquid trade.xyz dex  (USDC, ~1 bps taker)
+# If a venue names the same market differently (e.g. TTSLA on trade.xyz for
+# CLI symbol SNDK), add an entry in symbol_map.yaml — see that file.
 # 交易哪个市场不在本文件中配置——每次启动时用命令行参数显式指定：
 #     python3 main.py --symbol SNDK --hedge lighter-rh
 # Entropy 永远是其中一条腿；--hedge 选择对冲腿（三选一，见上表）。
+# 某 venue 的命名与命令行 symbol 不同（如 trade.xyz 上的 TTSLA）时，
+# 在 symbol_map.yaml 中加一条映射即可，详见该文件。
 
 # ============================ THE SIGNAL / 信号 ============================
 # premium_bps = (Entropy price / hedge price - 1) * 10000

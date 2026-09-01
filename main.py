@@ -8,7 +8,9 @@
     python3 main.py --symbol SNDK --hedge lighter-rh
 
 --symbol and --hedge are required on every start: the markets you trade are
-an explicit decision, not a config default. Add --cn for a Chinese-language
+an explicit decision, not a config default. Venue-native symbol names can
+differ (e.g. trade.xyz lists SNDK as TTSLA) — put those in symbol_map.yaml,
+loaded automatically when the file exists. Add --cn for a Chinese-language
 dashboard. There is no paper mode. Collect data with --record-only, set
 your thresholds with tools/analyze.py, then go live with small position
 caps.
@@ -91,6 +93,10 @@ def main() -> None:
                    help="strategy config (default: config.yaml)")
     p.add_argument("--env-file", default=".env",
                    help="credentials file (default: .env)")
+    p.add_argument("--symbol-map", default="symbol_map.yaml",
+                   help="CLI symbol -> venue symbol overrides "
+                        "(default: symbol_map.yaml, missing file = no "
+                        "overrides / symbol 映射表，文件不存在则为空)")
     p.add_argument("--record-only", action="store_true",
                    help="only collect minute data, run no strategy, send no "
                         "orders (needs no credentials)")
@@ -105,7 +111,8 @@ def main() -> None:
 
     try:
         cfg = load_config(args.config, args.env_file,
-                          symbol=args.symbol, hedge_venue=args.hedge)
+                          symbol=args.symbol, hedge_venue=args.hedge,
+                          symbol_map_file=args.symbol_map)
     except ConfigError as e:
         print(f"config error: {e}", file=sys.stderr)
         sys.exit(2)

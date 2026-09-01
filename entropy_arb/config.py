@@ -1,5 +1,6 @@
 """Configuration: strategy from a YAML file, credentials from .env, market
-selection (symbol + hedge venue) from the command line.
+selection (symbol + hedge venue) from the command line, with optional
+per-venue symbol renames from symbol_map.yaml.
 
 The split is deliberate: config.yaml IS the strategy (thresholds, sizing,
 risk) and is safe to share/commit as an example; .env holds only secrets;
@@ -238,6 +239,46 @@ def _get(d: dict, section: str, key: str, default):
     return (d.get(section) or {}).get(key, default)
 
 
+# -------------------------------------------------------------- symbol map
+
+def _load_symbol_map(path: str) -> Dict[str, Dict[str, str]]:
+    """Load CLI symbol -> {venue key -> venue-native symbol}. Missing = {}.
+
+    Venue-native names can differ from the CLI symbol (e.g. trade.xyz lists
+    SNDK as TTSLA). Strict like the main schema: a typo is an error, not a
+    setting that silently does nothing.
+    """
+    try:
+        with open(path) as fh:
+            raw = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        return {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"symbol map '{path}' is not valid YAML: {e}")
+    if not isinstance(raw, dict):
+        raise ConfigError(f"symbol map '{path}' must be a mapping of "
+                          f"symbol -> venue -> symbol")
+    venues = ("entropy",) + HEDGE_VENUES
+    out: Dict[str, Dict[str, str]] = {}
+    for sym, entry in raw.items():
+        # a bare NO/ON/OFF key is parsed as a YAML 1.1 bool — reject it here
+        if not isinstance(sym, str) or not sym.strip():
+            raise ConfigError(f"symbol map '{path}': symbol keys must be "
+                              f"non-empty strings, got {sym!r}")
+        if not isinstance(entry, dict):
+            raise ConfigError(f"symbol map '{path}': entry '{sym}' must be a "
+                              f"mapping of venue -> symbol")
+        for venue, mapped in entry.items():
+            if venue not in venues:
+                raise ConfigError(f"symbol map '{path}': '{sym}.{venue}' is "
+                                  f"not a venue (valid: {', '.join(venues)})")
+            if not isinstance(mapped, str) or not mapped.strip():
+                raise ConfigError(f"symbol map '{path}': '{sym}.{venue}' must "
+                                  f"be a non-empty string, got {mapped!r}")
+            out.setdefault(sym.strip(), {})[venue] = mapped.strip()
+    return out
+
+
 # ------------------------------------------------------------------ env layer
 
 def _env_s(name: str) -> Optional[str]:
@@ -253,7 +294,8 @@ def _env_i(name: str) -> Optional[int]:
 # -------------------------------------------------------------------- loading
 
 def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
-                symbol: str, hedge_venue: str) -> Config:
+                symbol: str, hedge_venue: str,
+                symbol_map_file: str = "symbol_map.yaml") -> Config:
     load_dotenv(env_file)
     try:
         with open(config_file) as fh:
@@ -273,6 +315,12 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         raise ConfigError(
             f"--hedge must be one of {list(HEDGE_VENUES)}, got "
             f"{hedge_venue!r} / --hedge 必须是 {list(HEDGE_VENUES)} 之一")
+
+    # per-venue symbol overrides: DEX naming can differ from the CLI symbol
+    symbol_map = _load_symbol_map(symbol_map_file)
+    mapped = symbol_map.get(symbol, {})
+    entropy_symbol = mapped.get("entropy", symbol)
+    hedge_symbol = mapped.get(hedge_venue, symbol)
 
     thr = raw.get("thresholds") or {}
     for k in ("midline_bps", "upper_bps", "lower_bps"):
@@ -300,7 +348,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
                                _env_s("HL_ACCOUNT_ADDRESS"))
     entropy = VenueConf(
         key="entropy", kind="hl", label="ENTROPY",
-        symbol=symbol,
+        symbol=entropy_symbol,
         fee_bps=float(_get(raw, "entropy", "taker_fee_bps", 0.0)),
         cap_usd=float(_get(raw, "entropy", "max_position_usd", 1000.0)),
         orders_per_min=int(_get(raw, "entropy", "max_orders_per_min", 120)),
@@ -311,7 +359,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
     if hedge_venue == "tradexyz":
         hedge = VenueConf(
             key="hedge", kind="hl", label="XYZ",
-            symbol=symbol,
+            symbol=hedge_symbol,
             fee_bps=float(_get(raw, "hedge", "taker_fee_bps", 1.0)),
             cap_usd=float(_get(raw, "hedge", "max_position_usd", 1000.0)),
             orders_per_min=int(_get(raw, "hedge", "max_orders_per_min", 120)),
@@ -324,7 +372,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         hedge = VenueConf(
             key="hedge", kind="lighter",
             label="LIGHTER" if hedge_venue == "lighter" else "RH",
-            symbol=symbol,
+            symbol=hedge_symbol,
             fee_bps=float(_get(raw, "hedge", "taker_fee_bps", 0.0)),
             cap_usd=float(_get(raw, "hedge", "max_position_usd", 1000.0)),
             orders_per_min=int(_get(raw, "hedge", "max_orders_per_min", 30)),

@@ -173,6 +173,11 @@ class Engine:
                  self.hedge.conf.symbol, cfg.midline_bps, cfg.lower_bps,
                  cfg.upper_bps, self.entropy.fee_bps, self.hedge.fee_bps,
                  self._step, self._min_notional)
+        renamed = [(v.name, v.conf.symbol) for v in (self.entropy, self.hedge)
+                   if v.conf.symbol != cfg.symbol]
+        if renamed:
+            log.info("symbol map: %s -> %s", cfg.symbol,
+                     ", ".join(f"{name}={sym}" for name, sym in renamed))
 
         if self.record_only:
             log.warning("RECORD-ONLY — collecting minute data, no strategy, "

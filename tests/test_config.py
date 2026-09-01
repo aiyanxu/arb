@@ -13,6 +13,8 @@ from entropy_arb.config import ConfigError, load_config  # noqa: E402
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 EXAMPLE = os.path.join(ROOT, "config.example.yaml")
 NO_ENV = os.path.join(tempfile.gettempdir(), "entropy-arb-no-such.env")
+# a symbol_map path that never exists: no overrides, tests stay isolated
+NO_MAP = os.path.join(tempfile.gettempdir(), "entropy-arb-no-such-map.yaml")
 
 
 def write_tmp(text: str) -> str:
@@ -20,6 +22,10 @@ def write_tmp(text: str) -> str:
     f.write(text)
     f.close()
     return f.name
+
+
+def write_map(text: str) -> str:
+    return write_tmp(text)
 
 
 MINIMAL = """
@@ -30,14 +36,17 @@ thresholds:
 """
 
 
-def load(yaml_text: str, symbol="SNDK", hedge="lighter-rh"):
+def load(yaml_text: str, symbol="SNDK", hedge="lighter-rh", map_text=None):
+    map_file = (write_map(map_text) if map_text is not None
+                else NO_MAP)
     return load_config(write_tmp(yaml_text), NO_ENV,
-                       symbol=symbol, hedge_venue=hedge)
+                       symbol=symbol, hedge_venue=hedge,
+                       symbol_map_file=map_file)
 
 
 def test_example_config_loads():
-    cfg = load_config(EXAMPLE, NO_ENV,
-                      symbol="SNDK", hedge_venue="lighter-rh")
+    cfg = load_config(EXAMPLE, NO_ENV, symbol="SNDK",
+                      hedge_venue="lighter-rh", symbol_map_file=NO_MAP)
     assert cfg.symbol == "SNDK"
     assert cfg.entropy.kind == "hl" and cfg.entropy.hl_dex == "io"
     assert cfg.hedge_venue == "lighter-rh"
@@ -90,6 +99,61 @@ def test_markets_no_longer_config_keys():
 def test_bad_cli_markets():
     expect_error(MINIMAL, "--hedge", hedge="binance")
     expect_error(MINIMAL, "--symbol", symbol="")
+
+
+def test_symbol_map_hedge_hit():
+    cfg = load(MINIMAL, hedge="tradexyz",
+               map_text="SNDK:\n  tradexyz: TTSLA\n")
+    assert cfg.symbol == "SNDK"                      # canonical stays CLI
+    assert cfg.entropy.symbol == "SNDK"              # unlisted venue falls back
+    assert cfg.hedge.symbol == "TTSLA"
+
+
+def test_symbol_map_entropy_hit():
+    cfg = load(MINIMAL, map_text="SNDK:\n  entropy: ESNDK\n")
+    assert cfg.entropy.symbol == "ESNDK"
+    assert cfg.hedge.symbol == "SNDK"
+
+
+def test_symbol_map_lighter_rh():
+    cfg = load(MINIMAL, symbol="BTC", map_text="BTC:\n  lighter-rh: BTC-USD\n")
+    assert cfg.hedge.symbol == "BTC-USD"
+    assert cfg.entropy.symbol == "BTC"
+
+
+def test_symbol_map_miss_falls_back():
+    cfg = load(MINIMAL, map_text="BTC:\n  lighter-rh: BTC-USD\n")
+    assert cfg.symbol == "SNDK"
+    assert cfg.entropy.symbol == "SNDK" and cfg.hedge.symbol == "SNDK"
+
+
+def test_symbol_map_missing_file():
+    # NO_MAP never exists -> pure CLI passthrough
+    cfg = load(MINIMAL)
+    assert cfg.entropy.symbol == "SNDK" and cfg.hedge.symbol == "SNDK"
+
+
+def test_symbol_map_bad_venue():
+    expect_error(MINIMAL, "not a venue",
+                 map_text="SNDK:\n  binance: XSNDK\n")
+
+
+def test_symbol_map_bad_value():
+    expect_error(MINIMAL, "must be a non-empty string",
+                 map_text="SNDK:\n  tradexyz: ''\n")
+    expect_error(MINIMAL, "must be a non-empty string",
+                 map_text="SNDK:\n  tradexyz: 5\n")
+
+
+def test_symbol_map_non_str_key():
+    # a bare NO/ON key is a YAML 1.1 bool -> rejected, not silently ignored
+    expect_error(MINIMAL, "symbol keys must be non-empty strings",
+                 map_text="NO:\n  tradexyz: TTSLA\n")
+
+
+def test_symbol_map_non_mapping_entry():
+    expect_error(MINIMAL, "must be a mapping of venue -> symbol",
+                 map_text="SNDK: TTSLA\n")
 
 
 def test_missing_thresholds():
