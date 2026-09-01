@@ -1,2 +1,3 @@
 # 需求
-当前监控的symbol是命令行中传入，在dex中存在命名差异，现在希望在项目中引入symbol映射关系表，当symbol在映射表中时，优先从映射表中获取symbol，否则依然从命令行中获取symbol。
+当前程序执行`python3 main.py --record-only --symbol SNDK --hedge lighter-rh`时会将信息写入`logs/minutes.csv`
+现在要使用duckdb替代`logs/minutes.csv`，将信息写入duckdb数据库

@@ -1,9 +1,10 @@
 """Automatic 1-minute orderbook data recorder.
 
 While the bot runs (live or --record-only), both venues' actual order books
-are sampled once per second and aggregated into one CSV row per minute.
-This is the dataset users analyze (tools/analyze.py) to choose
-thresholds.midline_bps / upper_bps / lower_bps for config.yaml.
+are sampled once per second and aggregated into one row per minute in a
+DuckDB database (logs/minutes.duckdb by default). This is the dataset users
+analyze (tools/analyze.py) to choose thresholds.midline_bps / upper_bps /
+lower_bps for config.yaml.
 
 Definitions (all in bps, fees NOT included — the engine adds fees on top):
 
@@ -21,11 +22,17 @@ Definitions (all in bps, fees NOT included — the engine adds fees on top):
 Bid/ask columns are the minute's last fresh sample (close). A row is only
 written for minutes with at least one sample where both books were fresh;
 `samples` says how many of the ~60 seconds qualified.
+
+The `symbol` / `hedge_venue` columns identify the pair a row belongs to;
+(symbol, hedge_venue, minute_ts) is the primary key, and rows are written
+with INSERT OR REPLACE — restarting within the same minute overwrites the
+partial row instead of duplicating it. The connection is opened per write
+and closed right after (DuckDB files are single-writer), so tools/analyze.py
+can query the database while the bot keeps recording.
 """
 from __future__ import annotations
 
 import asyncio
-import csv
 import logging
 import math
 import os
@@ -33,16 +40,27 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+import duckdb
+
 from .book import OrderBook
 
 log = logging.getLogger("recorder")
 
-HEADER = ["minute_ts", "time_utc",
-          "entropy_bid", "entropy_ask", "hedge_bid", "hedge_ask",
-          "premium_open_bps", "premium_high_bps", "premium_low_bps",
-          "premium_close_bps", "premium_mean_bps", "premium_std_bps",
-          "sell_edge_mean_bps", "sell_edge_max_bps",
-          "buy_edge_mean_bps", "buy_edge_max_bps", "samples"]
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS minutes (
+    minute_ts BIGINT, time_utc TIMESTAMP,
+    symbol VARCHAR, hedge_venue VARCHAR,
+    entropy_bid DOUBLE, entropy_ask DOUBLE,
+    hedge_bid DOUBLE, hedge_ask DOUBLE,
+    premium_open_bps DOUBLE, premium_high_bps DOUBLE,
+    premium_low_bps DOUBLE, premium_close_bps DOUBLE,
+    premium_mean_bps DOUBLE, premium_std_bps DOUBLE,
+    sell_edge_mean_bps DOUBLE, sell_edge_max_bps DOUBLE,
+    buy_edge_mean_bps DOUBLE, buy_edge_max_bps DOUBLE,
+    samples INTEGER,
+    PRIMARY KEY (symbol, hedge_venue, minute_ts)
+)
+"""
 
 
 class _MinuteAgg:
@@ -81,63 +99,65 @@ class _MinuteAgg:
         self.b_max = max(self.b_max, buy_edge)
         self.e_bid, self.e_ask, self.h_bid, self.h_ask = e_bid, e_ask, h_bid, h_ask
 
-    def row(self) -> list:
+    def row(self) -> tuple:
         mean = self.p_sum / self.n
         var = max(self.p_sumsq / self.n - mean * mean, 0.0)
         ts = self.minute * 60
-        return [ts,
-                datetime.fromtimestamp(ts, tz=timezone.utc)
-                .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        return (ts,
+                datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None),
                 f"{self.e_bid:.10g}", f"{self.e_ask:.10g}",
                 f"{self.h_bid:.10g}", f"{self.h_ask:.10g}",
-                f"{self.p_open:.3f}", f"{self.p_high:.3f}",
-                f"{self.p_low:.3f}", f"{self.p_close:.3f}",
-                f"{mean:.3f}", f"{math.sqrt(var):.3f}",
-                f"{self.s_sum / self.n:.3f}", f"{self.s_max:.3f}",
-                f"{self.b_sum / self.n:.3f}", f"{self.b_max:.3f}",
-                self.n]
+                self.p_open, self.p_high, self.p_low, self.p_close,
+                mean, math.sqrt(var),
+                self.s_sum / self.n, self.s_max,
+                self.b_sum / self.n, self.b_max,
+                self.n)
 
 
 class MinuteRecorder:
     def __init__(self, path: str, entropy_book: OrderBook, hedge_book: OrderBook,
-                 staleness_sec: float, interval_sec: float = 1.0) -> None:
+                 staleness_sec: float, symbol: str, hedge_venue: str,
+                 interval_sec: float = 1.0) -> None:
         self.path = path
         self.entropy_book = entropy_book
         self.hedge_book = hedge_book
         self.staleness_sec = staleness_sec
+        self.symbol = symbol
+        self.hedge_venue = hedge_venue
         self.interval_sec = interval_sec
         self.rows_written = 0
         self._agg: Optional[_MinuteAgg] = None
-        self._fh = None
-        self._writer = None
+        self._con = None
 
-    def _open(self) -> None:
+    def _open(self):
+        """Connect and ensure the table exists (lazily, on first row)."""
         d = os.path.dirname(self.path)
         if d:
             os.makedirs(d, exist_ok=True)
-        if os.path.exists(self.path) and os.path.getsize(self.path) > 0:
-            # never append rows under a different schema's header
-            with open(self.path) as fh0:
-                if fh0.readline().strip() != ",".join(HEADER):
-                    log.warning("%s has an old header — rotated to %s.old",
-                                self.path, self.path)
-                    os.replace(self.path, self.path + ".old")
-        new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
-        self._fh = open(self.path, "a", newline="")
-        self._writer = csv.writer(self._fh)
-        if new:
-            self._writer.writerow(HEADER)
-            self._fh.flush()
-        log.info("recording 1-minute orderbook data -> %s", self.path)
+        con = duckdb.connect(self.path)
+        con.execute(SCHEMA)
+        if not getattr(self, "_announced", False):
+            self._announced = True
+            log.info("recording 1-minute orderbook data -> %s", self.path)
+        return con
 
     def _flush_agg(self) -> None:
         if self._agg is None or self._agg.n == 0:
             self._agg = None
             return
-        if self._writer is None:
-            self._open()
-        self._writer.writerow(self._agg.row())
-        self._fh.flush()
+        con = self._open()
+        try:
+            # INSERT OR REPLACE: restarting inside the same minute overwrites
+            # the partial row instead of duplicating it
+            row = list(self._agg.row())
+            # column order: minute_ts, time_utc, symbol, hedge_venue, ...
+            values = row[:2] + [self.symbol, self.hedge_venue] + row[2:]
+            con.execute(
+                "INSERT OR REPLACE INTO minutes VALUES ("
+                + ", ".join("?" * len(values)) + ")", values)
+        finally:
+            # single-writer files: release the lock so analyze.py can read
+            con.close()
         self.rows_written += 1
         self._agg = None
 
@@ -159,11 +179,8 @@ class MinuteRecorder:
         self._agg.add(e_bid, e_ask, h_bid, h_ask)
 
     def close(self) -> None:
-        """Flush the partial minute and close the file (call on shutdown)."""
+        """Flush the partial minute and release the database (on shutdown)."""
         self._flush_agg()
-        if self._fh is not None:
-            self._fh.close()
-            self._fh = self._writer = None
 
     async def run(self, stop: asyncio.Event) -> None:
         try:

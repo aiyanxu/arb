@@ -92,7 +92,7 @@ python3 main.py --record-only --symbol SNDK --hedge lighter-rh
 ```
 
 Let it run for at least a few hours (a day is better — premiums have
-intraday regimes). It writes `logs/minutes.csv`.
+intraday regimes). It writes `logs/minutes.duckdb` (DuckDB).
 
 **2. Analyze and set your thresholds:**
 
@@ -127,11 +127,14 @@ logs (nohup/systemd — off-terminal runs fall back automatically), or set
 ## Data collection & analysis
 
 The recorder runs automatically in every mode (`recorder.enabled: true`).
-Once per second it samples both live books; once per minute it writes a row:
+Once per second it samples both live books; once per minute it writes a row
+to a DuckDB database (default `logs/minutes.duckdb`, key
+`recorder.db`):
 
 | column | meaning |
 |---|---|
 | `minute_ts`, `time_utc` | minute start (epoch seconds, ISO UTC) |
+| `symbol`, `hedge_venue` | pair this row belongs to (part of the primary key) |
 | `entropy_bid/ask`, `hedge_bid/ask` | last fresh top-of-book of the minute |
 | `premium_open/high/low/close/mean/std_bps` | mid-to-mid premium of Entropy over the hedge |
 | `sell_edge_mean/max_bps` | executable premium for SELL entropy (entropy bid / hedge ask − 1) |
@@ -144,6 +147,36 @@ Recorded edges are pre-fee; the analyzer subtracts `--fees-bps` (pass the
 suggestions translate directly into config values. `--hours 24` restricts to
 recent data; premiums drift, so re-run it regularly and update
 `config.yaml`.
+
+### Querying the data / 查询数据
+
+The database is a plain DuckDB file — query it directly:
+
+```bash
+duckdb logs/minutes.duckdb   # or: python3 -m duckdb logs/minutes.duckdb
+```
+
+```sql
+SELECT minute_ts, premium_close_bps, sell_edge_max_bps
+FROM minutes
+WHERE symbol = 'SNDK' AND hedge_venue = 'lighter-rh'
+ORDER BY minute_ts DESC LIMIT 20;
+```
+
+Rows are keyed on `(symbol, hedge_venue, minute_ts)` and written with
+`INSERT OR REPLACE`, so restarting the bot never duplicates a minute.
+The recorder releases the database between minute writes, so the file can
+be queried while the bot is running.
+
+Migrating an old CSV (`logs/minutes.csv` from before this change): rows lack
+the `symbol` / `hedge_venue` columns, so fill in the values you ran with:
+
+```sql
+-- duckdb logs/minutes.duckdb, with the old CSV in place
+INSERT OR REPLACE INTO minutes
+SELECT minute_ts, time_utc, 'SNDK', 'lighter-rh', * EXCLUDE (minute_ts, time_utc)
+FROM read_csv('logs/minutes.csv');
+```
 
 ## Configuration
 
@@ -165,7 +198,7 @@ errors), credentials in `.env`, and the markets on the command line
 | `inventory.scale_bps` / `floor_frac` | inventory ladder (extra bps past `floor_frac` of the cap) | 10 / 0.5 |
 | `execution.premium_persist_sec` | edge must persist before firing | 0.3 |
 | `execution.*` | slippage bounds, timeouts, reconcile cadence… | see file |
-| `recorder.*` | minute-data recorder | on, `logs/minutes.csv` |
+| `recorder.*` | minute-data recorder | on, `logs/minutes.duckdb` |
 | `logging.dashboard` / `logging.file` | Rich dashboard on a tty; log file while it runs | on, `logs/engine.log` |
 
 ## Credentials (`.env`, live only)
@@ -213,7 +246,7 @@ entropy_arb/venue_lighter.py  zkLighter adapter (mainnet, Robinhood chain)
 entropy_arb/engine.py    the two-venue strategy loop
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars
-tools/analyze.py         minutes.csv -> suggested thresholds
+tools/analyze.py         minutes.duckdb -> suggested thresholds
 tests/                   python3 -m pytest tests/
 ```
 

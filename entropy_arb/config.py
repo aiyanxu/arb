@@ -127,7 +127,7 @@ class Config:
     http_keepalive_sec: float
     # recorder
     recorder_enabled: bool
-    recorder_csv: str
+    recorder_db: str
     # logging
     log_level: str
     status_interval_sec: float
@@ -194,7 +194,7 @@ _SCHEMA: Dict[str, Any] = {
     },
     "recorder": {
         "enabled": bool,
-        "csv": str,
+        "db": str,
     },
     "logging": {
         "level": str,
@@ -408,7 +408,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         venue_probe_sec=float(_get(raw, "execution", "venue_probe_sec", 30.0)),
         http_keepalive_sec=float(_get(raw, "execution", "http_keepalive_sec", 10.0)),
         recorder_enabled=bool(_get(raw, "recorder", "enabled", True)),
-        recorder_csv=_get(raw, "recorder", "csv", "logs/minutes.csv"),
+        recorder_db=_get(raw, "recorder", "db", "logs/minutes.duckdb"),
         log_level=str(_get(raw, "logging", "level", "INFO")).upper(),
         status_interval_sec=float(_get(raw, "logging", "status_interval_sec", 30.0)),
         trades_csv=_get(raw, "logging", "trades_csv", "logs/trades.csv"),

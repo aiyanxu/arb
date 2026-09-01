@@ -1,16 +1,17 @@
-"""Minute recorder: aggregation, rollover, CSV output.
+"""Minute recorder: aggregation, rollover, DuckDB output.
 
 Run:  python3 -m pytest tests/  (or  python3 tests/test_recorder.py)
 """
-import csv
 import os
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import duckdb  # noqa: E402
+
 from entropy_arb.book import OrderBook  # noqa: E402
-from entropy_arb.recorder import HEADER, MinuteRecorder  # noqa: E402
+from entropy_arb.recorder import MinuteRecorder  # noqa: E402
 
 
 def set_book(book, bid, ask):
@@ -18,10 +19,25 @@ def set_book(book, bid, ask):
                    [{"px": str(ask), "sz": "10"}]])
 
 
+def fetch_all(path, where="1=1", params=None):
+    con = duckdb.connect(path, read_only=True)
+    try:
+        return con.execute(
+            f"SELECT * FROM minutes WHERE {where} ORDER BY minute_ts",
+            params or []).fetchall()
+    finally:
+        con.close()
+
+
+def make_recorder(path, e_book, h_book, symbol="SNDK", venue="lighter-rh"):
+    return MinuteRecorder(path, e_book, h_book, staleness_sec=1e9,
+                          symbol=symbol, hedge_venue=venue)
+
+
 def test_minute_aggregation_and_rollover():
     e_book, h_book = OrderBook(), OrderBook()
-    path = os.path.join(tempfile.mkdtemp(), "minutes.csv")
-    rec = MinuteRecorder(path, e_book, h_book, staleness_sec=1e9)
+    path = os.path.join(tempfile.mkdtemp(), "minutes.duckdb")
+    rec = make_recorder(path, e_book, h_book)
 
     t0 = 1_700_000_000.0            # 20s into a minute (boundary at ...020)
     # minute 1: entropy 10 bps rich, then 20 bps rich
@@ -35,51 +51,62 @@ def test_minute_aggregation_and_rollover():
     rec.sample(t0 + 45)
     rec.close()                        # flushes the partial minute 2
 
-    with open(path, newline="") as fh:
-        rows = list(csv.DictReader(fh))
-    assert [*rows[0]] == HEADER
+    rows = fetch_all(path)
     assert len(rows) == 2
+    # (minute_ts, time_utc, symbol, hedge_venue, e_bid, e_ask, h_bid, h_ask,
+    #  p_open, p_high, p_low, p_close, p_mean, p_std, s_mean, s_max,
+    #  b_mean, b_max, samples)
     m1, m2 = rows
-    assert int(m1["samples"]) == 2 and int(m2["samples"]) == 1
-    assert abs(float(m1["premium_open_bps"]) - 10.0) < 0.2
-    assert abs(float(m1["premium_high_bps"]) - 20.0) < 0.2
-    assert abs(float(m1["premium_close_bps"]) - 20.0) < 0.2
-    assert abs(float(m1["premium_mean_bps"]) - 15.0) < 0.2
+    assert m1[2] == "SNDK" and m1[3] == "lighter-rh"
+    assert m1[0] == int(t0 // 60) * 60 and m1[0] < m2[0]
+    assert m1[18] == 2 and m2[18] == 1
+    assert abs(m1[8] - 10.0) < 0.2                       # premium open
+    assert abs(m1[9] - 20.0) < 0.2                       # premium high
+    assert abs(m1[11] - 20.0) < 0.2                      # premium close
+    assert abs(m1[12] - 15.0) < 0.2                      # premium mean
     # executable edges: sell = bid_e/ask_h - 1, buy = bid_h/ask_e - 1
-    assert abs(float(m2["sell_edge_max_bps"])
-               - ((100.09 / 100.01 - 1) * 1e4)) < 0.05
-    assert abs(float(m2["buy_edge_max_bps"])
-               - ((99.99 / 100.11 - 1) * 1e4)) < 0.05
+    assert abs(m2[15] - ((100.09 / 100.01 - 1) * 1e4)) < 0.05   # sell max
+    assert abs(m2[17] - ((99.99 / 100.11 - 1) * 1e4)) < 0.05    # buy max
     # closes carry the last books
-    assert float(m2["entropy_bid"]) == 100.09
-    assert float(m2["hedge_ask"]) == 100.01
+    assert m2[4] == 100.09 and m2[7] == 100.01
 
 
 def test_stale_books_are_skipped():
     e_book, h_book = OrderBook(), OrderBook()
-    path = os.path.join(tempfile.mkdtemp(), "minutes.csv")
-    rec = MinuteRecorder(path, e_book, h_book, staleness_sec=1e9)
+    path = os.path.join(tempfile.mkdtemp(), "minutes.duckdb")
+    rec = make_recorder(path, e_book, h_book)
     rec.sample(1_700_000_000.0)        # both books empty -> nothing recorded
     set_book(e_book, 100.0, 100.02)    # only one side fresh
-    rec.sample(1_700_000_001.0)
+    rec.sample(1_700_000_001.0)        # only one side fresh
     rec.close()
     assert rec.rows_written == 0
-    assert not os.path.exists(path)    # no row, no file
+    assert not os.path.exists(path)    # lazy _open: no row, no db file
 
 
-def test_append_keeps_single_header():
+def test_same_minute_restart_overwrites():
     e_book, h_book = OrderBook(), OrderBook()
-    path = os.path.join(tempfile.mkdtemp(), "minutes.csv")
+    path = os.path.join(tempfile.mkdtemp(), "minutes.duckdb")
     set_book(e_book, 100.0, 100.02)
     set_book(h_book, 100.0, 100.02)
-    for start in (1_700_000_000.0, 1_700_000_060.0):
-        rec = MinuteRecorder(path, e_book, h_book, staleness_sec=1e9)
-        rec.sample(start)
-        rec.close()
-    with open(path) as fh:
-        lines = fh.read().strip().splitlines()
-    assert len(lines) == 3             # one header + two rows
-    assert lines[0].startswith("minute_ts,")
+
+    t0 = 1_700_000_000.0
+    rec = make_recorder(path, e_book, h_book)
+    rec.sample(t0)
+    rec.close()                        # partial minute written
+
+    # restart inside the same minute: INSERT OR REPLACE overwrites
+    rec = make_recorder(path, e_book, h_book)
+    rec.sample(t0 + 5)
+    rec.close()
+    assert len(fetch_all(path)) == 1
+
+    # next minute: a second row appears
+    rec = make_recorder(path, e_book, h_book)
+    rec.sample(t0 + 60)
+    rec.close()
+    rows = fetch_all(path)
+    assert len(rows) == 2
+    assert rows[0][0] != rows[1][0]    # distinct minutes, no dup PK
 
 
 if __name__ == "__main__":

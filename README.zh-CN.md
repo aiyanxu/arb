@@ -84,7 +84,7 @@ python3 main.py --record-only --symbol SNDK --hedge lighter-rh
 ```
 
 至少运行几个小时（最好一整天——溢价存在日内规律），数据写入
-`logs/minutes.csv`。
+`logs/minutes.duckdb`（DuckDB 数据库）。
 
 **第二步：分析数据、设定阈值：**
 
@@ -117,11 +117,13 @@ python3 main.py --symbol SNDK --hedge lighter-rh
 ## 数据采集与分析
 
 采集器在所有模式下自动运行（`recorder.enabled: true`）：每秒采样一次两边
-的真实盘口，每分钟写一行：
+的真实盘口，每分钟写一行到 DuckDB 数据库（默认 `logs/minutes.duckdb`，
+配置键 `recorder.db`）：
 
 | 列 | 含义 |
 |---|---|
 | `minute_ts`, `time_utc` | 分钟起点（epoch 秒 / ISO UTC） |
+| `symbol`, `hedge_venue` | 该行所属的交易对（主键的一部分） |
 | `entropy_bid/ask`, `hedge_bid/ask` | 该分钟最后一次有效盘口 |
 | `premium_open/high/low/close/mean/std_bps` | Entropy 相对对冲腿的中间价溢价 |
 | `sell_edge_mean/max_bps` | 卖出 Entropy 方向的可成交溢价（Entropy 买一 / 对冲腿卖一 − 1） |
@@ -132,6 +134,35 @@ python3 main.py --symbol SNDK --hedge lighter-rh
 （请传入**两边吃单费之和**——零费交易所默认 0.0，对冲腿为 `tradexyz` 时
 约为 1.0），因此其表格与建议值可直接填入配置。`--hours 24`
 可只分析最近数据；溢价中枢会漂移，请定期重新分析并更新 `config.yaml`。
+
+### 查询数据
+
+数据库就是一个普通 DuckDB 文件，可直接查询：
+
+```bash
+duckdb logs/minutes.duckdb   # 或: python3 -m duckdb logs/minutes.duckdb
+```
+
+```sql
+SELECT minute_ts, premium_close_bps, sell_edge_max_bps
+FROM minutes
+WHERE symbol = 'SNDK' AND hedge_venue = 'lighter-rh'
+ORDER BY minute_ts DESC LIMIT 20;
+```
+
+行以 `(symbol, hedge_venue, minute_ts)` 为主键、用 `INSERT OR REPLACE`
+写入，重启不会产生重复分钟。采集器在两次分钟写入之间会释放数据库，
+因此机器人运行时也可以直接查询文件。
+
+旧 CSV（`logs/minutes.csv`）迁移：行里没有 `symbol` / `hedge_venue`
+两列，请按当时运行参数填入：
+
+```sql
+-- duckdb logs/minutes.duckdb，旧 CSV 放在原处
+INSERT OR REPLACE INTO minutes
+SELECT minute_ts, time_utc, 'SNDK', 'lighter-rh', * EXCLUDE (minute_ts, time_utc)
+FROM read_csv('logs/minutes.csv');
+```
 
 ## 配置说明
 
@@ -152,7 +183,7 @@ python3 main.py --symbol SNDK --hedge lighter-rh
 | `inventory.scale_bps` / `floor_frac` | 库存阶梯（仓位超过上限的 `floor_frac` 后额外加价） | 10 / 0.5 |
 | `execution.premium_persist_sec` | 信号需持续多久才触发 | 0.3 |
 | `execution.*` | 滑点保护、超时、对账周期等 | 见配置文件 |
-| `recorder.*` | 分钟数据采集器 | 开启，`logs/minutes.csv` |
+| `recorder.*` | 分钟数据采集器 | 开启，`logs/minutes.duckdb` |
 | `logging.dashboard` / `logging.file` | 终端仪表盘；开启时日志写入文件 | 开启，`logs/engine.log` |
 
 ## 密钥配置（`.env`，仅实盘需要）
@@ -197,7 +228,7 @@ entropy_arb/venue_lighter.py  zkLighter 适配器（主网、Robinhood 链）
 entropy_arb/engine.py    双交易所策略主循环
 entropy_arb/dashboard.py Rich 终端仪表盘
 entropy_arb/recorder.py  分钟级盘口数据采集
-tools/analyze.py         minutes.csv -> 阈值建议
+tools/analyze.py         minutes.duckdb -> 阈值建议
 tests/                   python3 -m pytest tests/
 ```
 
