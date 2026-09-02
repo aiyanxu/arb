@@ -2,16 +2,21 @@
 """Analyze recorded minute data and suggest config.yaml thresholds.
 
 Reads the DuckDB database written by the built-in recorder
-(logs/minutes.duckdb by default) and prints, per (symbol, hedge_venue)
-pair found:
+(logs/minutes.duckdb by default), where each symbol has its own
+minutes_<symbol> table, and prints, per (symbol, hedge_venue) pair found:
 
   * the premium distribution (midline candidates),
   * how often each candidate upper/lower band would have fired,
   * a ready-to-paste `thresholds:` snippet.
 
+Data recorded before the per-symbol split still sits in the legacy shared
+`minutes` table — the analyzer never reads it and points at
+tools/migrate_per_symbol.py to move it.
+
 分析机器人自动采集的分钟级盘口数据，按 (symbol, hedge_venue) 分组输出
 溢价分布、各档阈值的触发频率，以及可直接粘贴进 config.yaml 的
-thresholds 建议值。
+thresholds 建议值。每个 symbol 独立一张表；分表前的旧数据仍在 legacy
+`minutes` 表中，需先运行 tools/migrate_per_symbol.py 迁移。
 
 Usage:
     python3 tools/analyze.py                          # logs/minutes.duckdb, all pairs
@@ -28,7 +33,26 @@ import time
 
 import duckdb
 
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+try:
+    from entropy_arb.recorder import TABLE_PREFIX
+except ImportError as e:
+    raise SystemExit(
+        "this tool needs the entropy_arb package — run it from the repo root "
+        "or pip install entropy-arb / 需在仓库根目录运行或先安装 entropy-arb") from e
+
 CANDIDATES = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0]
+
+# per-symbol tables start with the literal prefix "minutes_": the escaped
+# '_' excludes both the legacy `minutes` table and decoys like `minutesfoo`
+_TABLE_PATTERN = TABLE_PREFIX.replace("_", r"\_") + "%"
+
+_DISCOVER_SQL = ("SELECT table_name FROM duckdb_tables() "
+                 "WHERE schema_name = 'main' "
+                 "AND table_name LIKE ? ESCAPE '\\' "
+                 "ORDER BY table_name")
 
 
 def pctl(sorted_vals: list, q: float) -> float:
@@ -43,38 +67,62 @@ def pctl(sorted_vals: list, q: float) -> float:
     return sorted_vals[lo] * (hi - k) + sorted_vals[hi] * (k - lo)
 
 
-def load_rows(db: str, hours: float, min_samples: int,
+def discover_tables(db: str) -> list[str]:
+    """Per-symbol tables in the db (legacy `minutes` and decoys excluded)."""
+    con = duckdb.connect(db, read_only=True)
+    try:
+        return [r[0] for r in
+                con.execute(_DISCOVER_SQL, [_TABLE_PATTERN]).fetchall()]
+    finally:
+        con.close()
+
+
+def load_combos(db: str, tables: list[str]) -> list:
+    """(table, symbol, hedge_venue) triples, derived from the data itself."""
+    out = []
+    con = duckdb.connect(db, read_only=True)
+    try:
+        for t in tables:
+            rows = con.execute(
+                f'SELECT DISTINCT symbol, hedge_venue FROM "{t}" '
+                f"WHERE symbol IS NOT NULL ORDER BY symbol, hedge_venue"
+            ).fetchall()
+            out += [(t, s, v) for s, v in rows]
+    finally:
+        con.close()
+    return out
+
+
+def legacy_minutes_rows(db: str) -> int:
+    """Row count of the pre-split shared `minutes` table (0 if absent)."""
+    con = duckdb.connect(db, read_only=True)
+    try:
+        has = con.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'minutes'"
+        ).fetchone()
+        if not has or not has[0]:
+            return 0
+        n = con.execute("SELECT count(*) FROM minutes").fetchone()
+        return n[0] if n else 0
+    finally:
+        con.close()
+
+
+def load_rows(db: str, table: str, hours: float, min_samples: int,
               symbol: str, hedge_venue: str) -> list:
     cutoff = time.time() - hours * 3600 if hours > 0 else 0.0
-    where = ["minute_ts >= ?", "samples >= ?"]
-    params: list = [cutoff, min_samples]
-    if symbol:
-        where.append("symbol = ?")
-        params.append(symbol)
-    if hedge_venue:
-        where.append("hedge_venue = ?")
-        params.append(hedge_venue)
     con = duckdb.connect(db, read_only=True)
     try:
         rows = con.execute(
             f"SELECT minute_ts, premium_close_bps, premium_mean_bps, "
-            f"sell_edge_max_bps, buy_edge_max_bps FROM minutes "
-            f"WHERE {' AND '.join(where)} ORDER BY minute_ts",
-            params).fetchall()
+            f"sell_edge_max_bps, buy_edge_max_bps FROM \"{table}\" "
+            f"WHERE minute_ts >= ? AND samples >= ? "
+            f"AND symbol = ? AND hedge_venue = ? ORDER BY minute_ts",
+            [cutoff, min_samples, symbol, hedge_venue]).fetchall()
     finally:
         con.close()
     return [{"ts": r[0], "prem": r[1], "prem_mean": r[2],
              "sell_max": r[3], "buy_max": r[4]} for r in rows]
-
-
-def load_combos(db: str) -> list:
-    con = duckdb.connect(db, read_only=True)
-    try:
-        return con.execute(
-            "SELECT DISTINCT symbol, hedge_venue FROM minutes "
-            "ORDER BY symbol, hedge_venue").fetchall()
-    finally:
-        con.close()
 
 
 def main() -> None:
@@ -104,8 +152,7 @@ def main() -> None:
               file=sys.stderr)
         sys.exit(1)
     try:
-        combos = ([(args.symbol, args.hedge_venue)]
-                  if args.symbol or args.hedge_venue else load_combos(args.db))
+        tables = discover_tables(args.db)
     except FileNotFoundError:
         print(f"{args.db} not found — run the bot (even --record-only) to "
               f"collect data first / 未找到数据库文件，请先运行机器人采集数据",
@@ -114,6 +161,19 @@ def main() -> None:
     except duckdb.Error as e:
         print(f"cannot read {args.db}: {e}", file=sys.stderr)
         sys.exit(1)
+    try:
+        legacy = legacy_minutes_rows(args.db)
+    except duckdb.Error as e:
+        print(f"cannot read {args.db}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if legacy:
+        print(f"note: {args.db} still has {legacy} row(s) in the legacy "
+              f"'minutes' table (ignored here) — run: python3 "
+              f"tools/migrate_per_symbol.py --db {args.db} / 旧表数据需先迁移",
+              file=sys.stderr)
+    combos = [(t, s, v) for (t, s, v) in load_combos(args.db, tables)
+              if (not args.symbol or s == args.symbol)
+              and (not args.hedge_venue or v == args.hedge_venue)]
     if not combos:
         print(f"no data in {args.db} yet — run the bot (even --record-only) "
               f"to collect data first / 数据库中还没有数据，请先运行机器人"
@@ -123,15 +183,15 @@ def main() -> None:
     # analyze each (symbol, hedge_venue) pair separately: premiums of
     # different pairs are unrelated, pooling them would be meaningless
     reports = 0
-    for sym, venue in combos:
+    for table, sym, venue in combos:
         try:
-            rows = load_rows(args.db, args.hours, args.min_samples, sym, venue)
+            rows = load_rows(args.db, table, args.hours, args.min_samples,
+                             sym, venue)
         except duckdb.Error as e:
             print(f"cannot read {args.db}: {e}", file=sys.stderr)
             sys.exit(1)
         if len(rows) < 30:
-            label = " · ".join(x for x in (sym, venue) if x) or "data"
-            print(f"only {len(rows)} usable minute(s) for {label} in "
+            print(f"only {len(rows)} usable minute(s) for {sym} · {venue} in "
                   f"{args.db} — collect at least a few hours before trusting "
                   f"the numbers / 数据太少，建议至少采集数小时", file=sys.stderr)
             continue
@@ -151,7 +211,7 @@ def report(sym: str, venue: str, args, rows: list) -> None:
     var = sum((x - mean) ** 2 for x in prem) / len(prem)
     median = pctl(prem, 50)
 
-    label = f"{sym} · {venue}" if sym else "all data"
+    label = f"{sym} · {venue}"
     print(f"\n=== {label} [{args.db}]: {len(rows)} minutes over "
           f"{span_h:.1f}h ===\n")
     print("premium of Entropy over hedge, minute close (bps) / "

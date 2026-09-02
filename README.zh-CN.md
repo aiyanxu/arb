@@ -84,7 +84,7 @@ entropy-arb --record-only --symbol SNDK --hedge lighter-rh   # 覆盖配置
 ```
 
 至少运行几个小时（最好一整天——溢价存在日内规律），数据写入
-`logs/minutes.duckdb`（DuckDB 数据库）。
+`logs/minutes.duckdb`（DuckDB 数据库，每个 symbol 一张表）。
 
 **第二步：分析数据、设定阈值：**
 
@@ -183,7 +183,11 @@ docker run --rm --entrypoint python -v ./logs:/app/logs \
 
 采集器在所有模式下自动运行（`recorder.enabled: true`）：每秒采样一次两边
 的真实盘口，每分钟写一行到 DuckDB 数据库（默认 `logs/minutes.duckdb`，
-配置键 `recorder.db`）：
+配置键 `recorder.db`）。每个 symbol 独立一张表，表名
+`minutes_<symbol>`（symbol 转小写、`[a-z0-9_]` 之外的字符替换为 `_`，
+如 `SNDK` → `minutes_sndk`）；多个 symbol 共用同一个库文件时数据完全
+隔离。所有分表共用下面的列结构（`symbol` / `hedge_venue` 列保留，
+同一 symbol 的多个对冲腿共用它的表，靠主键区分）：
 
 | 列 | 含义 |
 |---|---|
@@ -210,7 +214,7 @@ duckdb logs/minutes.duckdb   # 或: python3 -m duckdb logs/minutes.duckdb
 
 ```sql
 SELECT minute_ts, premium_close_bps, sell_edge_max_bps
-FROM minutes
+FROM minutes_sndk
 WHERE symbol = 'SNDK' AND hedge_venue = 'lighter-rh'
 ORDER BY minute_ts DESC LIMIT 20;
 ```
@@ -219,12 +223,21 @@ ORDER BY minute_ts DESC LIMIT 20;
 写入，重启不会产生重复分钟。采集器在两次分钟写入之间会释放数据库，
 因此机器人运行时也可以直接查询文件。
 
+分表改造之前采集的数据仍在旧的共享 `minutes` 表中，分析工具不会读取
+它。请一次性迁移（先停止机器人）：
+
+```bash
+python3 tools/migrate_per_symbol.py --db logs/minutes.duckdb [--drop-old]
+```
+
+脚本可重复执行；默认保留旧表，传入 `--drop-old` 可在迁移成功后删除。
+
 旧 CSV（`logs/minutes.csv`）迁移：行里没有 `symbol` / `hedge_venue`
 两列，请按当时运行参数填入：
 
 ```sql
 -- duckdb logs/minutes.duckdb，旧 CSV 放在原处
-INSERT OR REPLACE INTO minutes
+INSERT OR REPLACE INTO minutes_sndk
 SELECT minute_ts, time_utc, 'SNDK', 'lighter-rh', * EXCLUDE (minute_ts, time_utc)
 FROM read_csv('logs/minutes.csv');
 ```

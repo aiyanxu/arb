@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import duckdb  # noqa: E402
 
 from entropy_arb.book import OrderBook  # noqa: E402
-from entropy_arb.recorder import MinuteRecorder  # noqa: E402
+from entropy_arb.recorder import MinuteRecorder, minute_table  # noqa: E402
 
 
 def set_book(book, bid, ask):
@@ -19,11 +19,11 @@ def set_book(book, bid, ask):
                    [{"px": str(ask), "sz": "10"}]])
 
 
-def fetch_all(path, where="1=1", params=None):
+def fetch_all(path, table, where="1=1", params=None):
     con = duckdb.connect(path, read_only=True)
     try:
         return con.execute(
-            f"SELECT * FROM minutes WHERE {where} ORDER BY minute_ts",
+            f'SELECT * FROM "{table}" WHERE {where} ORDER BY minute_ts',
             params or []).fetchall()
     finally:
         con.close()
@@ -51,7 +51,7 @@ def test_minute_aggregation_and_rollover():
     rec.sample(t0 + 45)
     rec.close()                        # flushes the partial minute 2
 
-    rows = fetch_all(path)
+    rows = fetch_all(path, minute_table("SNDK"))
     assert len(rows) == 2
     # (minute_ts, time_utc, symbol, hedge_venue, e_bid, e_ask, h_bid, h_ask,
     #  p_open, p_high, p_low, p_close, p_mean, p_std, s_mean, s_max,
@@ -69,6 +69,15 @@ def test_minute_aggregation_and_rollover():
     assert abs(m2[17] - ((99.99 / 100.11 - 1) * 1e4)) < 0.05    # buy max
     # closes carry the last books
     assert m2[4] == 100.09 and m2[7] == 100.01
+
+    # one table per symbol — exactly this symbol's table, no legacy one
+    con = duckdb.connect(path, read_only=True)
+    try:
+        tables = [r[0] for r in con.execute(
+            "SELECT table_name FROM duckdb_tables() ORDER BY 1").fetchall()]
+    finally:
+        con.close()
+    assert tables == [minute_table("SNDK")]
 
 
 def test_stale_books_are_skipped():
@@ -98,15 +107,68 @@ def test_same_minute_restart_overwrites():
     rec = make_recorder(path, e_book, h_book)
     rec.sample(t0 + 5)
     rec.close()
-    assert len(fetch_all(path)) == 1
+    assert len(fetch_all(path, minute_table("SNDK"))) == 1
 
     # next minute: a second row appears
     rec = make_recorder(path, e_book, h_book)
     rec.sample(t0 + 60)
     rec.close()
-    rows = fetch_all(path)
+    rows = fetch_all(path, minute_table("SNDK"))
     assert len(rows) == 2
     assert rows[0][0] != rows[1][0]    # distinct minutes, no dup PK
+
+
+def test_per_symbol_tables_separated():
+    e_book, h_book = OrderBook(), OrderBook()
+    set_book(e_book, 100.0, 100.02)
+    set_book(h_book, 100.0, 100.02)
+    path = os.path.join(tempfile.mkdtemp(), "minutes.duckdb")
+
+    # two recorders, two symbols, one db file, same minute
+    for sym in ("SNDK", "TSLA"):
+        rec = make_recorder(path, e_book, h_book, symbol=sym)
+        rec.sample(1_700_000_000.0)
+        rec.close()
+
+    con = duckdb.connect(path, read_only=True)
+    try:
+        tables = [r[0] for r in con.execute(
+            "SELECT table_name FROM duckdb_tables() ORDER BY 1").fetchall()]
+    finally:
+        con.close()
+    assert tables == [minute_table("SNDK"), minute_table("TSLA")]
+
+    sndk = fetch_all(path, minute_table("SNDK"))
+    tsla = fetch_all(path, minute_table("TSLA"))
+    assert len(sndk) == 1 and sndk[0][2] == "SNDK"
+    assert len(tsla) == 1 and tsla[0][2] == "TSLA"
+
+
+def test_symbol_sanitization():
+    # name rule: lowercase, anything outside [a-z0-9_] becomes '_'
+    assert minute_table("SNDK") == "minutes_sndk"
+    assert minute_table("BRK.B") == "minutes_brk_b"
+    # documented collision — safe: rows carry the original symbol and the
+    # PK keeps them distinct
+    assert minute_table("BTC-1") == minute_table("BTC_1")
+    try:
+        minute_table("///")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("empty sanitization must raise")
+
+    # the recorded row keeps the ORIGINAL symbol even when the table name
+    # is sanitized
+    e_book, h_book = OrderBook(), OrderBook()
+    set_book(e_book, 100.0, 100.02)
+    set_book(h_book, 100.0, 100.02)
+    path = os.path.join(tempfile.mkdtemp(), "minutes.duckdb")
+    rec = make_recorder(path, e_book, h_book, symbol="BRK.B")
+    rec.sample(1_700_000_000.0)
+    rec.close()
+    rows = fetch_all(path, "minutes_brk_b")
+    assert len(rows) == 1 and rows[0][2] == "BRK.B"
 
 
 if __name__ == "__main__":

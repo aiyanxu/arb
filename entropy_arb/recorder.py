@@ -2,9 +2,10 @@
 
 While the bot runs (live or --record-only), both venues' actual order books
 are sampled once per second and aggregated into one row per minute in a
-DuckDB database (logs/minutes.duckdb by default). This is the dataset users
-analyze (tools/analyze.py) to choose thresholds.midline_bps / upper_bps /
-lower_bps for config.yaml.
+DuckDB database (logs/minutes.duckdb by default). Each symbol gets its own
+table, named minutes_<symbol> (see minute_table()); this is the dataset
+users analyze (tools/analyze.py) to choose thresholds.midline_bps /
+upper_bps / lower_bps for config.yaml.
 
 Definitions (all in bps, fees NOT included — the engine adds fees on top):
 
@@ -36,6 +37,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -46,8 +48,12 @@ from .book import OrderBook
 
 log = logging.getLogger("recorder")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS minutes (
+TABLE_PREFIX = "minutes_"
+
+# Column list + PK — IDENTICAL to the legacy shared `minutes` table (same
+# fields, same index). Do not reorder: the INSERTs and the migration's
+# `SELECT *` rely on this order.
+_TABLE_DDL = """(
     minute_ts BIGINT, time_utc TIMESTAMP,
     symbol VARCHAR, hedge_venue VARCHAR,
     entropy_bid DOUBLE, entropy_ask DOUBLE,
@@ -59,8 +65,26 @@ CREATE TABLE IF NOT EXISTS minutes (
     buy_edge_mean_bps DOUBLE, buy_edge_max_bps DOUBLE,
     samples INTEGER,
     PRIMARY KEY (symbol, hedge_venue, minute_ts)
-)
-"""
+)"""
+
+
+def minute_table(symbol: str) -> str:
+    """Per-symbol table name: TABLE_PREFIX + sanitized symbol.
+
+    Lowercase (DuckDB identifiers are case-insensitive, so case must not
+    reach the name); anything outside [a-z0-9_] becomes '_'. Distinct
+    symbols can collide on one name (BTC-1 vs BTC_1) — that is safe: rows
+    still carry the original `symbol`, the PK keeps them distinct, and
+    tools/analyze.py derives combos from the data, never the table name.
+    """
+    cleaned = re.sub(r"[^a-z0-9_]", "_", symbol.strip().lower()).strip("_")
+    if not cleaned:
+        raise ValueError(f"symbol {symbol!r} sanitizes to an empty table name")
+    return TABLE_PREFIX + cleaned
+
+
+def create_table_sql(table: str) -> str:
+    return f'CREATE TABLE IF NOT EXISTS "{table}" {_TABLE_DDL}'
 
 
 class _MinuteAgg:
@@ -124,21 +148,36 @@ class MinuteRecorder:
         self.staleness_sec = staleness_sec
         self.symbol = symbol
         self.hedge_venue = hedge_venue
+        self.table = minute_table(symbol)
         self.interval_sec = interval_sec
         self.rows_written = 0
         self._agg: Optional[_MinuteAgg] = None
         self._con = None
 
     def _open(self):
-        """Connect and ensure the table exists (lazily, on first row)."""
+        """Connect and ensure the per-symbol table exists (lazily, first row)."""
         d = os.path.dirname(self.path)
         if d:
             os.makedirs(d, exist_ok=True)
-        con = duckdb.connect(self.path)
-        con.execute(SCHEMA)
+        last: Optional[duckdb.IOException] = None
+        con = None
+        for attempt in range(5):        # several recorders may share one file
+            try:
+                con = duckdb.connect(self.path)
+                con.execute(create_table_sql(self.table))
+            except duckdb.IOException as e:
+                last = e
+                con = None
+                time.sleep(0.2 * (attempt + 1))
+            else:
+                break
+        if con is None:                # every attempt failed on the file lock
+            assert last is not None
+            raise last
         if not getattr(self, "_announced", False):
             self._announced = True
-            log.info("recording 1-minute orderbook data -> %s", self.path)
+            log.info("recording 1-minute orderbook data -> %s (table %s)",
+                     self.path, self.table)
         return con
 
     def _flush_agg(self) -> None:
@@ -153,7 +192,7 @@ class MinuteRecorder:
             # column order: minute_ts, time_utc, symbol, hedge_venue, ...
             values = row[:2] + [self.symbol, self.hedge_venue] + row[2:]
             con.execute(
-                "INSERT OR REPLACE INTO minutes VALUES ("
+                f'INSERT OR REPLACE INTO "{self.table}" VALUES ('
                 + ", ".join("?" * len(values)) + ")", values)
         finally:
             # single-writer files: release the lock so analyze.py can read

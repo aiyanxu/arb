@@ -93,7 +93,8 @@ entropy-arb --record-only --symbol SNDK --hedge lighter-rh   # override
 ```
 
 Let it run for at least a few hours (a day is better — premiums have
-intraday regimes). It writes `logs/minutes.duckdb` (DuckDB).
+intraday regimes). It writes `logs/minutes.duckdb` (DuckDB, one table
+per symbol).
 
 **2. Analyze and set your thresholds:**
 
@@ -196,7 +197,13 @@ docker run --rm --entrypoint python -v ./logs:/app/logs \
 The recorder runs automatically in every mode (`recorder.enabled: true`).
 Once per second it samples both live books; once per minute it writes a row
 to a DuckDB database (default `logs/minutes.duckdb`, key
-`recorder.db`):
+`recorder.db`). Each symbol gets its own table, named
+`minutes_<symbol>` (symbol lowercased, characters outside `[a-z0-9_]`
+replaced with `_` — e.g. `SNDK` → `minutes_sndk`); running several symbols
+against the same db file keeps their data fully separated. All per-symbol
+tables share the layout below (the `symbol` / `hedge_venue` columns stay,
+so multiple hedge venues for one symbol live in its table, kept apart by
+the primary key):
 
 | column | meaning |
 |---|---|
@@ -225,7 +232,7 @@ duckdb logs/minutes.duckdb   # or: python3 -m duckdb logs/minutes.duckdb
 
 ```sql
 SELECT minute_ts, premium_close_bps, sell_edge_max_bps
-FROM minutes
+FROM minutes_sndk
 WHERE symbol = 'SNDK' AND hedge_venue = 'lighter-rh'
 ORDER BY minute_ts DESC LIMIT 20;
 ```
@@ -235,12 +242,23 @@ Rows are keyed on `(symbol, hedge_venue, minute_ts)` and written with
 The recorder releases the database between minute writes, so the file can
 be queried while the bot is running.
 
+Data recorded before the per-symbol split lives in the legacy shared
+`minutes` table, which the analyzer ignores. Migrate it once (stop the
+bot first):
+
+```bash
+python3 tools/migrate_per_symbol.py --db logs/minutes.duckdb [--drop-old]
+```
+
+The script is idempotent and keeps the legacy table unless `--drop-old`
+is passed.
+
 Migrating an old CSV (`logs/minutes.csv` from before this change): rows lack
 the `symbol` / `hedge_venue` columns, so fill in the values you ran with:
 
 ```sql
 -- duckdb logs/minutes.duckdb, with the old CSV in place
-INSERT OR REPLACE INTO minutes
+INSERT OR REPLACE INTO minutes_sndk
 SELECT minute_ts, time_utc, 'SNDK', 'lighter-rh', * EXCLUDE (minute_ts, time_utc)
 FROM read_csv('logs/minutes.csv');
 ```
