@@ -2,6 +2,9 @@
 .env
 config.yaml
 
+# editor / 编辑器
+.vscode/
+
 # runtime output / 运行时输出
 logs/
 *.log
