@@ -2,25 +2,33 @@
 """Analyze recorded minute data and suggest config.yaml thresholds.
 
 Reads the DuckDB database written by the built-in recorder
-(logs/minutes.duckdb by default), where each symbol has its own
-minutes_<symbol> table, and prints, per (symbol, hedge_venue) pair found:
+(logs/minutes.duckdb by default), where each (symbol, base_venue,
+hedge_venue) combination has its own
+minutes_<symbol>__<base>__<hedge> table, and prints one report per
+combination found:
 
   * the premium distribution (midline candidates),
   * how often each candidate upper/lower band would have fired,
   * a ready-to-paste `thresholds:` snippet.
 
-Data recorded before the per-symbol split still sits in the legacy shared
-`minutes` table — the analyzer never reads it and points at
-tools/migrate_per_symbol.py to move it.
+Premium is measured for ONE (base, hedge) pair — the numbers are
+pair-relative and never transfer across combinations.
 
-分析机器人自动采集的分钟级盘口数据，按 (symbol, hedge_venue) 分组输出
-溢价分布、各档阈值的触发频率，以及可直接粘贴进 config.yaml 的
-thresholds 建议值。每个 symbol 独立一张表；分表前的旧数据仍在 legacy
-`minutes` 表中，需先运行 tools/migrate_per_symbol.py 迁移。
+Data recorded before the per-(base,hedge,symbol) split still sits in
+older-shaped tables (the shared `minutes` table and per-symbol
+`minutes_<symbol>` tables); the analyzer never reads them and points at
+tools/migrate_per_symbol.py to move them.
+
+分析机器人自动采集的分钟级盘口数据，按 (symbol, base_venue, hedge_venue)
+组合分组输出溢价分布、各档阈值的触发频率，以及可直接粘贴进 config.yaml
+的 thresholds 建议值。每个组合独立一张表；分表前的旧数据（共享 minutes
+表与 minutes_<symbol> 表）不会被读取，需先运行
+tools/migrate_per_symbol.py 迁移。
 
 Usage:
-    python3 tools/analyze.py                          # logs/minutes.duckdb, all pairs
-    python3 tools/analyze.py --db path.duckdb --symbol SNDK --hedge-venue lighter-rh
+    python3 tools/analyze.py                          # logs/minutes.duckdb, all combos
+    python3 tools/analyze.py --db p.duckdb --symbol SNDK --base-venue entropy \
+        --hedge-venue lighter-rh
     python3 tools/analyze.py --hours 24 --min-samples 10
 """
 from __future__ import annotations
@@ -68,7 +76,7 @@ def pctl(sorted_vals: list, q: float) -> float:
 
 
 def discover_tables(db: str) -> list[str]:
-    """Per-symbol tables in the db (legacy `minutes` and decoys excluded)."""
+    """Per-combination tables in the db (legacy/decoy names excluded)."""
     con = duckdb.connect(db, read_only=True)
     try:
         return [r[0] for r in
@@ -77,17 +85,39 @@ def discover_tables(db: str) -> list[str]:
         con.close()
 
 
+def _columns(con, table: str) -> list[str]:
+    return [r[0] for r in con.execute(
+        "SELECT column_name FROM duckdb_columns() "
+        "WHERE schema_name = 'main' AND table_name = ? ORDER BY column_index",
+        [table]).fetchall()]
+
+
+def split_tables(db: str, tables: list[str]) -> tuple[list[str], list[str]]:
+    """(current, old-shape) tables. Current tables carry the base_venue
+    column; old-shape ones (per-symbol or shared-`minutes` era) are ignored
+    here but reported so the user can migrate."""
+    cur, old = [], []
+    con = duckdb.connect(db, read_only=True)
+    try:
+        for t in tables:
+            (cur if "base_venue" in _columns(con, t) else old).append(t)
+    finally:
+        con.close()
+    return cur, old
+
+
 def load_combos(db: str, tables: list[str]) -> list:
-    """(table, symbol, hedge_venue) triples, derived from the data itself."""
+    """(table, symbol, base_venue, hedge_venue) quads, data-derived."""
     out = []
     con = duckdb.connect(db, read_only=True)
     try:
         for t in tables:
             rows = con.execute(
-                f'SELECT DISTINCT symbol, hedge_venue FROM "{t}" '
-                f"WHERE symbol IS NOT NULL ORDER BY symbol, hedge_venue"
+                f'SELECT DISTINCT symbol, base_venue, hedge_venue FROM "{t}" '
+                f"WHERE symbol IS NOT NULL "
+                f"ORDER BY symbol, base_venue, hedge_venue"
             ).fetchall()
-            out += [(t, s, v) for s, v in rows]
+            out += [(t, s, b, v) for s, b, v in rows]
     finally:
         con.close()
     return out
@@ -109,7 +139,7 @@ def legacy_minutes_rows(db: str) -> int:
 
 
 def load_rows(db: str, table: str, hours: float, min_samples: int,
-              symbol: str, hedge_venue: str) -> list:
+              symbol: str, base_venue: str, hedge_venue: str) -> list:
     cutoff = time.time() - hours * 3600 if hours > 0 else 0.0
     con = duckdb.connect(db, read_only=True)
     try:
@@ -117,8 +147,9 @@ def load_rows(db: str, table: str, hours: float, min_samples: int,
             f"SELECT minute_ts, premium_close_bps, premium_mean_bps, "
             f"sell_edge_max_bps, buy_edge_max_bps FROM \"{table}\" "
             f"WHERE minute_ts >= ? AND samples >= ? "
-            f"AND symbol = ? AND hedge_venue = ? ORDER BY minute_ts",
-            [cutoff, min_samples, symbol, hedge_venue]).fetchall()
+            f"AND symbol = ? AND base_venue = ? AND hedge_venue = ? "
+            f"ORDER BY minute_ts",
+            [cutoff, min_samples, symbol, base_venue, hedge_venue]).fetchall()
     finally:
         con.close()
     return [{"ts": r[0], "prem": r[1], "prem_mean": r[2],
@@ -133,6 +164,8 @@ def main() -> None:
                         "(default: logs/minutes.duckdb)")
     p.add_argument("--symbol", default=None,
                    help="only analyze this symbol (default: all)")
+    p.add_argument("--base-venue", default=None,
+                   help="only analyze this base venue (default: all)")
     p.add_argument("--hedge-venue", default=None,
                    help="only analyze this hedge venue (default: all)")
     p.add_argument("--hours", type=float, default=0.0,
@@ -163,16 +196,21 @@ def main() -> None:
         sys.exit(1)
     try:
         legacy = legacy_minutes_rows(args.db)
+        current, old_shape = split_tables(args.db, tables)
     except duckdb.Error as e:
         print(f"cannot read {args.db}: {e}", file=sys.stderr)
         sys.exit(1)
-    if legacy:
-        print(f"note: {args.db} still has {legacy} row(s) in the legacy "
-              f"'minutes' table (ignored here) — run: python3 "
-              f"tools/migrate_per_symbol.py --db {args.db} / 旧表数据需先迁移",
-              file=sys.stderr)
-    combos = [(t, s, v) for (t, s, v) in load_combos(args.db, tables)
+    if legacy or old_shape:
+        parts = ([f"'minutes' ({legacy} row(s))"] if legacy else [])
+        parts += [f"{t} (no base_venue column)" for t in old_shape]
+        print(f"note: {args.db} still has old-shaped table(s) — "
+              f"{', '.join(parts)} — ignored here; run: python3 "
+              f"tools/migrate_per_symbol.py --db {args.db} / 旧表结构数据"
+              f"需先迁移", file=sys.stderr)
+    combos = [(t, s, b, v) for (t, s, b, v) in
+              load_combos(args.db, current)
               if (not args.symbol or s == args.symbol)
+              and (not args.base_venue or b == args.base_venue)
               and (not args.hedge_venue or v == args.hedge_venue)]
     if not combos:
         print(f"no data in {args.db} yet — run the bot (even --record-only) "
@@ -180,42 +218,43 @@ def main() -> None:
               f"采集数据", file=sys.stderr)
         sys.exit(1)
 
-    # analyze each (symbol, hedge_venue) pair separately: premiums of
-    # different pairs are unrelated, pooling them would be meaningless
+    # analyze each (symbol, base, hedge) combination separately: premiums of
+    # different combinations are unrelated, pooling them would be meaningless
     reports = 0
-    for table, sym, venue in combos:
+    for table, sym, base, venue in combos:
         try:
             rows = load_rows(args.db, table, args.hours, args.min_samples,
-                             sym, venue)
+                             sym, base, venue)
         except duckdb.Error as e:
             print(f"cannot read {args.db}: {e}", file=sys.stderr)
             sys.exit(1)
         if len(rows) < 30:
-            print(f"only {len(rows)} usable minute(s) for {sym} · {venue} in "
-                  f"{args.db} — collect at least a few hours before trusting "
-                  f"the numbers / 数据太少，建议至少采集数小时", file=sys.stderr)
+            print(f"only {len(rows)} usable minute(s) for {sym} · {base}×"
+                  f"{venue} in {args.db} — collect at least a few hours "
+                  f"before trusting the numbers / 数据太少，建议至少采集数小时",
+                  file=sys.stderr)
             continue
         if reports:
             print("\n" + "=" * 60 + "\n")
-        report(sym, venue, args, rows)
+        report(sym, base, venue, args, rows)
         reports += 1
     if not reports:
         sys.exit(1)
 
 
-def report(sym: str, venue: str, args, rows: list) -> None:
-    """Per-pair analysis. Pure-Python stats unchanged from the CSV era."""
+def report(sym: str, base: str, venue: str, args, rows: list) -> None:
+    """Per-combination analysis. Pure-Python stats unchanged from the CSV era."""
     span_h = (rows[-1]["ts"] - rows[0]["ts"]) / 3600.0 + 1 / 60.0
     prem = sorted(r["prem"] for r in rows)
     mean = sum(prem) / len(prem)
     var = sum((x - mean) ** 2 for x in prem) / len(prem)
     median = pctl(prem, 50)
 
-    label = f"{sym} · {venue}"
+    label = f"{sym} · {base}×{venue}"
     print(f"\n=== {label} [{args.db}]: {len(rows)} minutes over "
           f"{span_h:.1f}h ===\n")
-    print("premium of Entropy over hedge, minute close (bps) / "
-          "Entropy 相对对冲腿的溢价:")
+    print(f"premium of {base} over {venue}, minute close (bps) / "
+          f"{base} 相对 {venue} 的溢价:")
     print(f"  mean {mean:+.2f}   std {math.sqrt(var):.2f}   "
           f"median {median:+.2f}")
     print(f"  p5 {pctl(prem, 5):+.2f}   p25 {pctl(prem, 25):+.2f}   "
@@ -234,7 +273,7 @@ def report(sym: str, venue: str, args, rows: list) -> None:
     print(f"\nwith midline_bps = {midline:+.1f} (median) and {fees:.1f} bps "
           f"round-trip taker fees, minutes each band would have fired / "
           f"各档净阈值触发的分钟数:")
-    print(f"  {'band bps':>9} | {'SELL entropy':>17} | {'BUY entropy':>17}")
+    print(f"  {'band bps':>9} | {'SELL ' + base:>17} | {'BUY ' + base:>17}")
     print(f"  {'':>9} | {'minutes':>8} {'per day':>8} | "
           f"{'minutes':>8} {'per day':>8}")
     per_day = 24.0 / span_h if span_h > 0 else 0.0

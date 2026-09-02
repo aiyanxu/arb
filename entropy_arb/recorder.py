@@ -2,34 +2,35 @@
 
 While the bot runs (live or --record-only), both venues' actual order books
 are sampled once per second and aggregated into one row per minute in a
-DuckDB database (logs/minutes.duckdb by default). Each symbol gets its own
-table, named minutes_<symbol> (see minute_table()); this is the dataset
-users analyze (tools/analyze.py) to choose thresholds.midline_bps /
-upper_bps / lower_bps for config.yaml.
+DuckDB database (logs/minutes.duckdb by default). Each (symbol, base_venue,
+hedge_venue) combination gets its own table, named
+minutes_<symbol>__<base_venue>__<hedge_venue> (see minute_table()); this is
+the dataset users analyze (tools/analyze.py) to choose
+thresholds.midline_bps / upper_bps / lower_bps for config.yaml.
 
 Definitions (all in bps, fees NOT included — the engine adds fees on top):
 
-    premium    = (entropy_mid / hedge_mid - 1) * 1e4
-                 the mid-to-mid premium of Entropy over the hedge venue;
+    premium    = (base_mid / hedge_mid - 1) * 1e4
+                 the mid-to-mid premium of the base leg over the hedge leg;
                  its long-run center is what midline_bps hardcodes.
-    sell_edge  = (entropy_bid / hedge_ask - 1) * 1e4
-                 the EXECUTABLE premium for SELL-entropy/BUY-hedge; the
+    sell_edge  = (base_bid / hedge_ask - 1) * 1e4
+                 the EXECUTABLE premium for SELL-base/BUY-hedge; the
                  engine fires this direction when sell_edge clears
                  midline_bps + upper_bps (plus fees).
-    buy_edge   = (hedge_bid / entropy_ask - 1) * 1e4
-                 the executable premium for BUY-entropy/SELL-hedge; fires
+    buy_edge   = (hedge_bid / base_ask - 1) * 1e4
+                 the executable premium for BUY-base/SELL-hedge; fires
                  when buy_edge clears lower_bps - midline_bps (plus fees).
 
 Bid/ask columns are the minute's last fresh sample (close). A row is only
 written for minutes with at least one sample where both books were fresh;
 `samples` says how many of the ~60 seconds qualified.
 
-The `symbol` / `hedge_venue` columns identify the pair a row belongs to;
-(symbol, hedge_venue, minute_ts) is the primary key, and rows are written
-with INSERT OR REPLACE — restarting within the same minute overwrites the
-partial row instead of duplicating it. The connection is opened per write
-and closed right after (DuckDB files are single-writer), so tools/analyze.py
-can query the database while the bot keeps recording.
+The `symbol` / `base_venue` / `hedge_venue` columns identify the pair a row
+belongs to; (symbol, base_venue, hedge_venue, minute_ts) is the primary key,
+and rows are written with INSERT OR REPLACE — restarting within the same
+minute overwrites the partial row instead of duplicating it. The connection
+is opened per write and closed right after (DuckDB files are single-writer),
+so tools/analyze.py can query the database while the bot keeps recording.
 """
 from __future__ import annotations
 
@@ -50,13 +51,13 @@ log = logging.getLogger("recorder")
 
 TABLE_PREFIX = "minutes_"
 
-# Column list + PK — IDENTICAL to the legacy shared `minutes` table (same
-# fields, same index). Do not reorder: the INSERTs and the migration's
-# `SELECT *` rely on this order.
+# Column list + PK for per-(symbol, base_venue, hedge_venue) tables.
+# Do not reorder: the INSERTs and the migration's positional SELECT rely on
+# this order.
 _TABLE_DDL = """(
     minute_ts BIGINT, time_utc TIMESTAMP,
-    symbol VARCHAR, hedge_venue VARCHAR,
-    entropy_bid DOUBLE, entropy_ask DOUBLE,
+    symbol VARCHAR, base_venue VARCHAR, hedge_venue VARCHAR,
+    base_bid DOUBLE, base_ask DOUBLE,
     hedge_bid DOUBLE, hedge_ask DOUBLE,
     premium_open_bps DOUBLE, premium_high_bps DOUBLE,
     premium_low_bps DOUBLE, premium_close_bps DOUBLE,
@@ -64,23 +65,29 @@ _TABLE_DDL = """(
     sell_edge_mean_bps DOUBLE, sell_edge_max_bps DOUBLE,
     buy_edge_mean_bps DOUBLE, buy_edge_max_bps DOUBLE,
     samples INTEGER,
-    PRIMARY KEY (symbol, hedge_venue, minute_ts)
+    PRIMARY KEY (symbol, base_venue, hedge_venue, minute_ts)
 )"""
 
 
-def minute_table(symbol: str) -> str:
-    """Per-symbol table name: TABLE_PREFIX + sanitized symbol.
+def minute_table(symbol: str, base_venue: str, hedge_venue: str) -> str:
+    """Table name for one (symbol, base_venue, hedge_venue) combination:
+    TABLE_PREFIX + the three parts joined by '__' and sanitized.
 
     Lowercase (DuckDB identifiers are case-insensitive, so case must not
     reach the name); anything outside [a-z0-9_] becomes '_'. Distinct
-    symbols can collide on one name (BTC-1 vs BTC_1) — that is safe: rows
-    still carry the original `symbol`, the PK keeps them distinct, and
-    tools/analyze.py derives combos from the data, never the table name.
+    combinations can collide on one name — that is safe: rows still carry
+    the original columns, the PK keeps them distinct, and tools/analyze.py
+    derives combos from the data, never the table name.
     """
-    cleaned = re.sub(r"[^a-z0-9_]", "_", symbol.strip().lower()).strip("_")
-    if not cleaned:
-        raise ValueError(f"symbol {symbol!r} sanitizes to an empty table name")
-    return TABLE_PREFIX + cleaned
+    cleaned_parts = []
+    for label, part in (("symbol", symbol), ("base_venue", base_venue),
+                        ("hedge_venue", hedge_venue)):
+        cleaned = re.sub(r"[^a-z0-9_]", "_", part.strip().lower()).strip("_")
+        if not cleaned:
+            raise ValueError(f"{label} {part!r} sanitizes to an empty table "
+                             f"name component")
+        cleaned_parts.append(cleaned)
+    return TABLE_PREFIX + "__".join(cleaned_parts)
 
 
 def create_table_sql(table: str) -> str:
@@ -139,16 +146,17 @@ class _MinuteAgg:
 
 
 class MinuteRecorder:
-    def __init__(self, path: str, entropy_book: OrderBook, hedge_book: OrderBook,
-                 staleness_sec: float, symbol: str, hedge_venue: str,
-                 interval_sec: float = 1.0) -> None:
+    def __init__(self, path: str, base_book: OrderBook, hedge_book: OrderBook,
+                 staleness_sec: float, *, symbol: str, base_venue: str,
+                 hedge_venue: str, interval_sec: float = 1.0) -> None:
         self.path = path
-        self.entropy_book = entropy_book
+        self.base_book = base_book
         self.hedge_book = hedge_book
         self.staleness_sec = staleness_sec
         self.symbol = symbol
+        self.base_venue = base_venue
         self.hedge_venue = hedge_venue
-        self.table = minute_table(symbol)
+        self.table = minute_table(symbol, base_venue, hedge_venue)
         self.interval_sec = interval_sec
         self.rows_written = 0
         self._agg: Optional[_MinuteAgg] = None
@@ -189,8 +197,10 @@ class MinuteRecorder:
             # INSERT OR REPLACE: restarting inside the same minute overwrites
             # the partial row instead of duplicating it
             row = list(self._agg.row())
-            # column order: minute_ts, time_utc, symbol, hedge_venue, ...
-            values = row[:2] + [self.symbol, self.hedge_venue] + row[2:]
+            # column order: minute_ts, time_utc, symbol, base_venue,
+            #               hedge_venue, base_bid, ...
+            values = (row[:2] + [self.symbol, self.base_venue,
+                                 self.hedge_venue] + row[2:])
             con.execute(
                 f'INSERT OR REPLACE INTO "{self.table}" VALUES ('
                 + ", ".join("?" * len(values)) + ")", values)
@@ -206,10 +216,10 @@ class MinuteRecorder:
         minute = int(now // 60)
         if self._agg is not None and self._agg.minute != minute:
             self._flush_agg()
-        if not (self.entropy_book.is_fresh(self.staleness_sec)
+        if not (self.base_book.is_fresh(self.staleness_sec)
                 and self.hedge_book.is_fresh(self.staleness_sec)):
             return
-        e_bid, e_ask = self.entropy_book.best_bid(), self.entropy_book.best_ask()
+        e_bid, e_ask = self.base_book.best_bid(), self.base_book.best_ask()
         h_bid, h_ask = self.hedge_book.best_bid(), self.hedge_book.best_ask()
         if None in (e_bid, e_ask, h_bid, h_ask):
             return

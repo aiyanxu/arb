@@ -1,9 +1,5 @@
 # 背景
-目前采样数据时，数据统一落在logs/minutes.duckdb中，现在需要可以根据symbol来分表存储
+目前跨所套利，entropy所有作为base而存在，现在希望可以在config.yaml中指定base和hedge_venue, 包括cli参数也可进行指定
 
 要求
-- 每个symbol对应一个表
-- 每个表的字段与logs/minutes.duckdb中的字段一致
-- 每个表的索引与logs/minutes.duckdb中的索引一致
-- 执行analysis.py时，可以根据symbol来查询
-- 每个symbol的查询结果是独立的，互不相关
+- 采样数据时，最新需求下base, hedge, symbol 对应一张表

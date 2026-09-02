@@ -6,18 +6,21 @@
     # equivalent: python -m entropy_arb --record-only
 
     # per-run override — wins over config.yaml
-    entropy-arb --record-only --symbol SNDK --hedge lighter-rh
+    entropy-arb --record-only --symbol SNDK --base entropy --hedge lighter-rh
+    entropy-arb --record-only --symbol SNDK --base lighter --hedge entropy
 
     # LIVE trading: real orders, real money (needs .env credentials)
     entropy-arb
 
-The markets you trade live in config.yaml (symbol:, hedge_venue:);
---symbol and --hedge are optional per-run overrides that win over the file.
-Venue-native symbol names can differ (e.g. trade.xyz lists SNDK as TTSLA) —
-put those in symbol_map.yaml, loaded automatically when the file exists. Add
---cn for a Chinese-language dashboard. There is no paper mode. Collect data
-with --record-only, set your thresholds with tools/analyze.py, then go live
-with small position caps.
+The markets you trade live in config.yaml (symbol:, base_venue:,
+hedge_venue:); --symbol, --base and --hedge are optional per-run overrides
+that win over the file. Either leg may be any of entropy / lighter /
+lighter-rh / tradexyz (the two legs must differ; base_venue defaults to
+entropy). Venue-native symbol names can differ (e.g. trade.xyz lists SNDK
+as TTSLA) — put those in symbol_map.yaml, loaded automatically when the
+file exists. Add --cn for a Chinese-language dashboard. There is no paper
+mode. Collect data with --record-only, set your thresholds with
+tools/analyze.py, then go live with small position caps.
 
 On a terminal the bot shows a live Rich dashboard (books, signal, positions,
 PnL, last executions) and writes log lines to logging.file; use
@@ -33,7 +36,7 @@ import os
 import signal
 import sys
 
-from entropy_arb.config import HEDGE_VENUES, ConfigError, load_config
+from entropy_arb.config import VENUES, ConfigError, load_config
 from entropy_arb.engine import Engine
 
 
@@ -83,17 +86,19 @@ async def amain(cfg, record_only: bool, use_dashboard: bool, force_tty: bool,
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="Two-venue LIVE arbitrage: Entropy vs Lighter mainnet / "
-                    "Lighter Robinhood / trade.xyz. Without --record-only, "
-                    "real orders are sent.")
+        description="Two-venue LIVE arbitrage: any of entropy / lighter / "
+                    "lighter-rh / tradexyz as base, any other as hedge. "
+                    "Without --record-only, real orders are sent.")
     p.add_argument("--symbol", default=None,
                    help="override the symbol from config.yaml, e.g. SNDK / "
                         "覆盖 config.yaml 中的交易品种")
-    p.add_argument("--hedge", default=None, choices=HEDGE_VENUES,
-                   metavar="VENUE",
+    p.add_argument("--base", default=None, choices=VENUES, metavar="VENUE",
+                   help=f"override the base venue from config.yaml, one of: "
+                        f"{', '.join(VENUES)} / 覆盖 config.yaml 中的 base 腿")
+    p.add_argument("--hedge", default=None, choices=VENUES, metavar="VENUE",
                    help=f"override the hedge venue from config.yaml, one of: "
-                        f"{', '.join(HEDGE_VENUES)} / 覆盖 config.yaml 中的"
-                        f"对冲腿，三选一")
+                         f"{', '.join(VENUES)} / 覆盖 config.yaml 中的"
+                         f"对冲腿")
     p.add_argument("--config", default="config.yaml",
                    help="strategy config (default: config.yaml)")
     p.add_argument("--env-file", default=".env",
@@ -116,7 +121,8 @@ def main() -> None:
 
     try:
         cfg = load_config(args.config, args.env_file,
-                          symbol=args.symbol, hedge_venue=args.hedge,
+                          symbol=args.symbol, base_venue=args.base,
+                          hedge_venue=args.hedge,
                           symbol_map_file=args.symbol_map)
     except ConfigError as e:
         print(f"config error: {e}", file=sys.stderr)

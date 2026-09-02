@@ -9,14 +9,17 @@
 # 都会被校验：拼写错误会直接报错，而不是静默失效。
 #
 # ============================== MARKETS / 交易市场 ==========================
-# Entropy is always one leg; hedge_venue picks the other:
-#   lighter      Lighter mainnet            (USDC, 0 bps taker)
-#   lighter-rh   Lighter Robinhood chain    (USDG, 0 bps taker)
-#   tradexyz     Hyperliquid trade.xyz dex  (USDC, ~1 bps taker)
-# Per-run override: entropy-arb --symbol SNDK --hedge lighter-rh
-# Entropy 永远是其中一条腿；hedge_venue 选择对冲腿（三选一，见上表）。
-# 单次启动可用 --symbol / --hedge 覆盖本文件的设置。
+# Any venue can be either leg; the two legs must differ:
+#   entropy     Entropy on Hyperliquid   (dex io, USDC, 0 bps taker)
+#   lighter     Lighter mainnet          (USDC, 0 bps taker)
+#   lighter-rh  Lighter Robinhood chain  (USDG, 0 bps taker)
+#   tradexyz    Hyperliquid trade.xyz dex (USDC, ~1 bps taker)
+# base_venue defaults to entropy when omitted.
+# Per-run override: entropy-arb --symbol SNDK --base entropy --hedge lighter-rh
+# 任意 venue 均可作为 base 或对冲腿（两腿不能相同），base_venue 缺省为 entropy。
+# 单次启动可用 --symbol / --base / --hedge 覆盖本文件的设置。
 symbol: SNDK
+base_venue: entropy
 hedge_venue: lighter-rh
 #
 # If a venue names the same market differently (e.g. TTSLA on trade.xyz for
@@ -25,10 +28,11 @@ hedge_venue: lighter-rh
 # 在 symbol_map.yaml 中加一条映射即可，详见该文件。
 
 # ============================ THE SIGNAL / 信号 ============================
-# premium_bps = (Entropy price / hedge price - 1) * 10000
+# premium_bps = (base price / hedge price - 1) * 10000, measured for THIS
+# (base, hedge) pair — swap either leg and the numbers no longer apply.
 #
-#   SELL entropy + BUY hedge   when executable premium >= midline + upper
-#   BUY entropy + SELL hedge   when executable premium <= midline - lower
+#   SELL base + BUY hedge   when executable premium >= midline + upper
+#   BUY base + SELL hedge   when executable premium <= midline - lower
 #
 # Both hurdles are net of taker fees (the engine adds fees on top), so one
 # full round trip nets >= upper + lower bps after fees by construction.
@@ -36,26 +40,33 @@ hedge_venue: lighter-rh
 # midline_bps is a number YOU derive from recorded data. Run the bot
 # (--record-only) to collect logs/minutes.duckdb, then:  python3 tools/analyze.py
 #
-# midline_bps 是你根据采集数据设定的值。先运行机器人（--record-only）采集
+# midline_bps 是你根据采集数据设定的值（仅适用于当前 base/hedge 组合——
+# 更换任一腿后需重新采集分析）。先运行机器人（--record-only）采集
 # logs/minutes.duckdb，再运行 python3 tools/analyze.py 获取建议值。
 # 两个方向的门槛都已扣除手续费（引擎会在此之上另加手续费），因此一次完整往返
 # 扣费后净赚 >= upper + lower bps。
 thresholds:
   midline_bps: 0.0     # persistent premium center / 溢价长期中枢
-  upper_bps: 4.0       # entry above midline: sell entropy / 中枢上方入场带宽
-  lower_bps: 4.0       # entry below midline: buy entropy / 中枢下方入场带宽
+  upper_bps: 4.0       # entry above midline: sell base / 中枢上方入场带宽
+  lower_bps: 4.0       # entry below midline: buy base / 中枢下方入场带宽
 
 # ======================== VENUES / 交易所参数 ==============================
-entropy:
-  dex: io                    # Entropy's dex name on Hyperliquid / Entropy 的 dex 名
-  taker_fee_bps: 0.0         # taker fee / 吃单手续费
+# Per-leg overrides; fees and order budgets default to the VENUE (see the
+# table above), so a swapped base_venue/hedge_venue picks up the right
+# numbers automatically. 'dex' only applies to Hyperliquid venues.
+# 各腿可覆盖的参数；费率与下单预算默认跟随 venue（见上表），交换两腿
+# 自动套用正确的默认值。dex 仅对 Hyperliquid 系 venue 有效。
+base:
   max_position_usd: 1000     # position cap / 持仓上限（美元）
-  max_orders_per_min: 120    # order-send budget, sliding 60s / 每分钟下单预算
+  #dex: io                   # dex name, hl venues only (entropy default: io) / 仅 Hyperliquid 系腿有效
+  #taker_fee_bps: 0.0        # venue default 0.0 / 费率默认跟随 venue
+  #max_orders_per_min: 120   # venue default 120
 
 hedge:
-  taker_fee_bps: 0.0         # Lighter venues: 0; tradexyz: ~1.0
   max_position_usd: 1000
-  max_orders_per_min: 30     # Lighter's ceiling is ~40/min / Lighter 上限约 40/分钟
+  #dex: xyz                  # dex name, hl venues only (tradexyz default: xyz)
+  #taker_fee_bps: 0.0        # lighter venues 0.0; tradexyz ~1.0 (venue default)
+  #max_orders_per_min: 30    # lighter venues 30; tradexyz 120 (venue default)
 
 # ========================= SIZING / 下单规模 ===============================
 sizing:

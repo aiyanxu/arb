@@ -2,11 +2,14 @@
 
 **[中文文档 / Chinese documentation → README.zh-CN.md](README.zh-CN.md)**
 
-Open-source two-venue perp arbitrage bot. One leg is always **Entropy**
-(the `io` builder dex on Hyperliquid); the other leg — the hedge — is one of:
+Open-source two-venue perp arbitrage bot. Both legs are configurable — either
+can be any of the four supported venues (the two legs must differ); the
+**base** leg is the premium's numerator, the **hedge** leg its denominator
+(`base_venue` defaults to `entropy`):
 
-| `hedge_venue` | venue | quote | taker fee | protocol |
+| venue | venue | quote | taker fee | protocol |
 |---|---|---|---|---|
+| `entropy` | Entropy on Hyperliquid | USDC | 0 bps | HL l2Book (dex `io`) |
 | `lighter` | Lighter mainnet | USDC | 0 bps | zkLighter ws (diff books, async settle) |
 | `lighter-rh` | Lighter Robinhood chain | **USDG** | 0 bps | zkLighter ws |
 | `tradexyz` | Hyperliquid trade.xyz dex | USDC | ~1 bps | HL l2Book, sync IOC settle |
@@ -25,24 +28,25 @@ websocket (`wss://api.hyperliquid.xyz/ws`), Lighter books from Lighter's
 official websocket.
 
 While it runs — even with no credentials and no strategy — it records both
-books to **1-minute CSV bars**, and the bundled analyzer turns that data into
-the three numbers that define the whole strategy.
+books to **1-minute DuckDB bars**, and the bundled analyzer turns that data
+into the three numbers that define the whole strategy.
 
 ## The signal
 
 The band is three numbers in `config.yaml`, derived by you from recorded
-data:
+data — **measured for one (base, hedge) pair**: swap either leg and the
+numbers no longer apply, re-run the analyzer:
 
 ```
-premium_bps = (Entropy price / hedge price − 1) × 10 000
+premium_bps = (base price / hedge price − 1) × 10 000
 
-                          ┌──────────────  SELL entropy + BUY hedge
+                          ┌──────────────  SELL base + BUY hedge
 midline + upper  ───────────────────────────────────────────────────
                                        ▲
 midline          ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─   the premium's usual level
                                        ▼
 midline − lower  ───────────────────────────────────────────────────
-                          └──────────────  BUY entropy + SELL hedge
+                          └──────────────  BUY base + SELL hedge
 ```
 
 - `midline_bps` — where the premium normally sits. Cross-venue premiums are
@@ -51,19 +55,19 @@ midline − lower  ────────────────────�
   never unwind. Measure where the premium actually sits and type it in.
 - `upper_bps` / `lower_bps` — the entry bands on each side of the midline.
 
-Both hurdles are applied to **executable** prices (entropy bid vs hedge ask,
+Both hurdles are applied to **executable** prices (base bid vs hedge ask,
 and vice versa) and are **net of both venues' taker fees** — the engine adds
 fees on top before a slice qualifies. A full round trip therefore nets
 **≥ upper + lower bps after fees by construction**.
 
-One consequence worth understanding: with `midline_bps: 5`, the buy-entropy
+One consequence worth understanding: with `midline_bps: 5`, the buy-base
 hurdle is `lower − midline`, which can be **negative**. That is intentional —
-if entropy is persistently 5 bps rich, buying it at a 0 bps premium is 5 bps
-cheap versus its own equilibrium, and that trade is the profitable unwind of
-an earlier sell at `midline + upper`. It also means a **wrong midline loses
-money**: if you type `midline_bps: 5` while the true premium sits at 0, the
-bot happily buys entropy at fair value all day. Measure first, then trade —
-that is what the recorder and analyzer are for.
+if the base leg is persistently 5 bps rich, buying it at a 0 bps premium is
+5 bps cheap versus its own equilibrium, and that trade is the profitable
+unwind of an earlier sell at `midline + upper`. It also means a **wrong
+midline loses money**: if you type `midline_bps: 5` while the true premium
+sits at 0, the bot happily buys the base leg at fair value all day. Measure
+first, then trade — that is what the recorder and analyzer are for.
 
 ## Quick start
 
@@ -76,10 +80,11 @@ cp config.example.yaml config.yaml       # the strategy (thresholds, sizing, ris
 cp .env.example .env                     # credentials — required to trade
 ```
 
-The markets live in `config.yaml`: `symbol` (traded on both venues) and
-`hedge_venue` (one of `lighter`, `lighter-rh`, `tradexyz`; Entropy is always
-the other leg). The `--symbol` / `--hedge` flags override them for a single
-run.
+The markets live in `config.yaml`: `symbol` (traded on both venues),
+`base_venue` and `hedge_venue` (each one of `entropy`, `lighter`,
+`lighter-rh`, `tradexyz`; the two legs must differ; `base_venue` defaults to
+`entropy`). The `--symbol` / `--base` / `--hedge` flags override them for a
+single run.
 
 There is **no paper mode** — the bot either collects data (`--record-only`)
 or trades live. Validate with recorded data and tiny position caps, not with
@@ -89,12 +94,13 @@ simulated fills.
 
 ```bash
 entropy-arb --record-only                  # markets from config.yaml
-entropy-arb --record-only --symbol SNDK --hedge lighter-rh   # override
+entropy-arb --record-only --symbol SNDK --base entropy --hedge lighter-rh
+entropy-arb --record-only --symbol SNDK --base lighter --hedge entropy
 ```
 
 Let it run for at least a few hours (a day is better — premiums have
-intraday regimes). It writes `logs/minutes.duckdb` (DuckDB, one table
-per symbol).
+intraday regimes). It writes `logs/minutes.duckdb` (DuckDB, one table per
+(symbol, base, hedge) combination).
 
 **2. Analyze and set your thresholds:**
 
@@ -110,7 +116,7 @@ the smallest position caps that clear the venue minimums:
 
 ```bash
 pip install -e ".[live]"
-entropy-arb                                # or with overrides: --symbol SNDK --hedge lighter-rh
+entropy-arb              # or with overrides: --symbol SNDK --base entropy --hedge lighter-rh
 ```
 
 Running without `--record-only` sends real orders immediately once both
@@ -197,30 +203,30 @@ docker run --rm --entrypoint python -v ./logs:/app/logs \
 The recorder runs automatically in every mode (`recorder.enabled: true`).
 Once per second it samples both live books; once per minute it writes a row
 to a DuckDB database (default `logs/minutes.duckdb`, key
-`recorder.db`). Each symbol gets its own table, named
-`minutes_<symbol>` (symbol lowercased, characters outside `[a-z0-9_]`
-replaced with `_` — e.g. `SNDK` → `minutes_sndk`); running several symbols
-against the same db file keeps their data fully separated. All per-symbol
-tables share the layout below (the `symbol` / `hedge_venue` columns stay,
-so multiple hedge venues for one symbol live in its table, kept apart by
-the primary key):
+`recorder.db`). Each (symbol, base_venue, hedge_venue) combination gets its
+own table, named `minutes_<symbol>__<base>__<hedge>` (parts lowercased,
+characters outside `[a-z0-9_]` replaced with `_` — e.g. SNDK on
+entropy×lighter-rh → `minutes_sndk__entropy__lighter_rh`); running several
+combinations against the same db file keeps their data fully separated. All
+tables share the layout below:
 
 | column | meaning |
 |---|---|
 | `minute_ts`, `time_utc` | minute start (epoch seconds, ISO UTC) |
-| `symbol`, `hedge_venue` | pair this row belongs to (part of the primary key) |
-| `entropy_bid/ask`, `hedge_bid/ask` | last fresh top-of-book of the minute |
-| `premium_open/high/low/close/mean/std_bps` | mid-to-mid premium of Entropy over the hedge |
-| `sell_edge_mean/max_bps` | executable premium for SELL entropy (entropy bid / hedge ask − 1) |
-| `buy_edge_mean/max_bps` | executable premium for BUY entropy (hedge bid / entropy ask − 1) |
+| `symbol`, `base_venue`, `hedge_venue` | combination this row belongs to (part of the primary key) |
+| `base_bid/ask`, `hedge_bid/ask` | last fresh top-of-book of the minute |
+| `premium_open/high/low/close/mean/std_bps` | mid-to-mid premium of the base over the hedge |
+| `sell_edge_mean/max_bps` | executable premium for SELL base (base bid / hedge ask − 1) |
+| `buy_edge_mean/max_bps` | executable premium for BUY base (hedge bid / base ask − 1) |
 | `samples` | how many of the ~60 seconds both books were fresh |
 
 Recorded edges are pre-fee; the analyzer subtracts `--fees-bps` (pass the
 **sum** of both venues' taker fees — default 0.0 for the zero-fee venues,
-~1.0 with a `tradexyz` hedge) before counting firings, so its table and
+~1.0 with a `tradexyz` leg) before counting firings, so its table and
 suggestions translate directly into config values. `--hours 24` restricts to
 recent data; premiums drift, so re-run it regularly and update
-`config.yaml`.
+`config.yaml`. Premiums are pair-relative — re-measure whenever either leg's
+venue changes.
 
 ### Querying the data / 查询数据
 
@@ -232,34 +238,37 @@ duckdb logs/minutes.duckdb   # or: python3 -m duckdb logs/minutes.duckdb
 
 ```sql
 SELECT minute_ts, premium_close_bps, sell_edge_max_bps
-FROM minutes_sndk
-WHERE symbol = 'SNDK' AND hedge_venue = 'lighter-rh'
+FROM minutes_sndk__entropy__lighter_rh
+WHERE symbol = 'SNDK' AND base_venue = 'entropy'
+  AND hedge_venue = 'lighter-rh'
 ORDER BY minute_ts DESC LIMIT 20;
 ```
 
-Rows are keyed on `(symbol, hedge_venue, minute_ts)` and written with
-`INSERT OR REPLACE`, so restarting the bot never duplicates a minute.
+Rows are keyed on `(symbol, base_venue, hedge_venue, minute_ts)` and written
+with `INSERT OR REPLACE`, so restarting the bot never duplicates a minute.
 The recorder releases the database between minute writes, so the file can
 be queried while the bot is running.
 
-Data recorded before the per-symbol split lives in the legacy shared
-`minutes` table, which the analyzer ignores. Migrate it once (stop the
-bot first):
+Data recorded before the per-combination split lives in older-shaped tables
+(the shared `minutes` table and per-symbol `minutes_<symbol>` tables), which
+the analyzer ignores. Migrate once (stop the bot first) — every migrated row
+is stamped `base_venue='entropy'` (the historical base leg):
 
 ```bash
 python3 tools/migrate_per_symbol.py --db logs/minutes.duckdb [--drop-old]
 ```
 
-The script is idempotent and keeps the legacy table unless `--drop-old`
+The script is idempotent and keeps the old tables unless `--drop-old`
 is passed.
 
 Migrating an old CSV (`logs/minutes.csv` from before this change): rows lack
-the `symbol` / `hedge_venue` columns, so fill in the values you ran with:
+the venue columns, so fill in the values you ran with:
 
 ```sql
 -- duckdb logs/minutes.duckdb, with the old CSV in place
-INSERT OR REPLACE INTO minutes_sndk
-SELECT minute_ts, time_utc, 'SNDK', 'lighter-rh', * EXCLUDE (minute_ts, time_utc)
+INSERT OR REPLACE INTO minutes_sndk__entropy__lighter_rh
+SELECT minute_ts, time_utc, 'SNDK', 'entropy', 'lighter-rh',
+       * EXCLUDE (minute_ts, time_utc)
 FROM read_csv('logs/minutes.csv');
 ```
 
@@ -272,13 +281,14 @@ startup errors), credentials in `.env`. Full commented reference:
 | key | meaning | default |
 |---|---|---|
 | `symbol` | market traded on both legs | — |
-| `hedge_venue` | the other leg: `lighter` / `lighter-rh` / `tradexyz` | — |
-| `thresholds.midline_bps` | premium center (measure it!) | — |
+| `base_venue` | the base leg (premium numerator): `entropy` / `lighter` / `lighter-rh` / `tradexyz` | `entropy` |
+| `hedge_venue` | the hedge leg (premium denominator): any venue ≠ `base_venue` | — |
+| `thresholds.midline_bps` | premium center for THIS pair (measure it!) | — |
 | `thresholds.upper_bps` / `lower_bps` | entry bands (> 0) | — |
-| `entropy.dex` | Entropy's dex name on Hyperliquid | `io` |
-| `*.taker_fee_bps` | per-venue taker fee | 0.0 (tradexyz hedge: 1.0) |
-| `*.max_position_usd` | per-venue position cap | 1000 |
-| `*.max_orders_per_min` | per-venue send budget (sliding 60 s) | 120; lighter hedges 30 |
+| `base.dex` / `hedge.dex` | dex name for a Hyperliquid leg | `io` / `xyz` |
+| `*.taker_fee_bps` | per-leg taker fee (must not be below the venue default) | per venue |
+| `*.max_position_usd` | per-leg position cap | 1000 |
+| `*.max_orders_per_min` | per-leg send budget (sliding 60 s) | per venue (120; lighter 30) |
 | `sizing.take_fraction` | fraction of crossable depth taken | 0.5 |
 | `sizing.max_order_notional_usd` | per-slice cap | 500 |
 | `inventory.scale_bps` / `floor_frac` | inventory ladder (extra bps past `floor_frac` of the cap) | 10 / 0.5 |
@@ -289,16 +299,24 @@ startup errors), credentials in `.env`. Full commented reference:
 
 ## Credentials (`.env`, live only)
 
-- **Entropy / tradexyz (Hyperliquid)** — create an API ("agent") wallet at
+Credentials are keyed by **venue** — whichever leg a venue is on, it reads
+its own block.
+
+- **entropy / tradexyz (Hyperliquid)** — create an API ("agent") wallet at
   <https://app.hyperliquid.xyz/API>. `HL_PRIVATE_KEY` is the **agent** key,
-  `HL_ACCOUNT_ADDRESS` your main account address. With `hedge_venue: tradexyz`
-  both legs share this account by default (one nonce sequence is handled
-  internally); set `HL_PRIVATE_KEY_XYZ` / `HL_ACCOUNT_ADDRESS_XYZ`
-  to split them. Fund the dex-specific clearinghouses you trade.
-- **Lighter** — `LIGHTER_ACCOUNT_INDEX`, `LIGHTER_API_KEY_INDEX`,
-  `LIGHTER_API_PRIVATE_KEY`, registered on the **same deployment** as your
-  `hedge_venue` (mainnet and the Robinhood chain are separate accounts and
+  `HL_ACCOUNT_ADDRESS` your main account address. When both legs are
+  Hyperliquid venues (e.g. entropy×tradexyz, either order) they share this
+  account by default (one nonce sequence is handled internally); set
+  `HL_PRIVATE_KEY_XYZ` / `HL_ACCOUNT_ADDRESS_XYZ` to split them. Fund the
+  dex-specific clearinghouses you trade.
+- **lighter / lighter-rh** — `LIGHTER_ACCOUNT_INDEX`, `LIGHTER_API_KEY_INDEX`,
+  `LIGHTER_API_PRIVATE_KEY`, registered on the **same deployment** as the
+  Lighter leg (mainnet and the Robinhood chain are separate accounts and
   keys — see [lighter-python](https://github.com/elliottech/lighter-python)).
+  When **both** legs are Lighter deployments, the hedge leg reads
+  `LIGHTER_HEDGE_ACCOUNT_INDEX` / `LIGHTER_HEDGE_API_KEY_INDEX` /
+  `LIGHTER_HEDGE_API_PRIVATE_KEY` instead (no fallback — the deployments
+  have separate accounts).
 
 ## How execution works
 
@@ -333,7 +351,7 @@ entropy_arb/venue_lighter.py  zkLighter adapter (mainnet, Robinhood chain)
 entropy_arb/engine.py    the two-venue strategy loop
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars
-tools/analyze.py         minutes.duckdb -> suggested thresholds
+tools/analyze.py         minutes.duckdb -> suggested thresholds (per combination)
 tests/                   python3 -m pytest tests/
 ```
 

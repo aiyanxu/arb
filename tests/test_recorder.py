@@ -29,9 +29,30 @@ def fetch_all(path, table, where="1=1", params=None):
         con.close()
 
 
-def make_recorder(path, e_book, h_book, symbol="SNDK", venue="lighter-rh"):
-    return MinuteRecorder(path, e_book, h_book, staleness_sec=1e9,
-                          symbol=symbol, hedge_venue=venue)
+def tables_of(path):
+    con = duckdb.connect(path, read_only=True)
+    try:
+        return [r[0] for r in con.execute(
+            "SELECT table_name FROM duckdb_tables() ORDER BY 1").fetchall()]
+    finally:
+        con.close()
+
+
+def make_recorder(path, b_book, h_book, symbol="SNDK",
+                  base_venue="entropy", venue="lighter-rh"):
+    return MinuteRecorder(path, b_book, h_book, staleness_sec=1e9,
+                          symbol=symbol, base_venue=base_venue,
+                          hedge_venue=venue)
+
+
+# column indices in the 20-column layout
+# (minute_ts, time_utc, symbol, base_venue, hedge_venue, base_bid, base_ask,
+#  hedge_bid, hedge_ask, p_open, p_high, p_low, p_close, p_mean, p_std,
+#  s_mean, s_max, b_mean, b_max, samples)
+I_SYM, I_BASE, I_HEDGE = 2, 3, 4
+I_BBASE_BID, I_HEDGE_ASK = 5, 8
+I_P_OPEN, I_P_HIGH, I_P_CLOSE, I_P_MEAN = 9, 10, 12, 13
+I_S_MAX, I_B_MAX, I_SAMPLES = 16, 18, 19
 
 
 def test_minute_aggregation_and_rollover():
@@ -40,7 +61,7 @@ def test_minute_aggregation_and_rollover():
     rec = make_recorder(path, e_book, h_book)
 
     t0 = 1_700_000_000.0            # 20s into a minute (boundary at ...020)
-    # minute 1: entropy 10 bps rich, then 20 bps rich
+    # minute 1: base 10 bps rich, then 20 bps rich
     set_book(e_book, 100.09, 100.11)   # mid 100.10
     set_book(h_book, 99.99, 100.01)    # mid 100.00
     rec.sample(t0)
@@ -51,33 +72,25 @@ def test_minute_aggregation_and_rollover():
     rec.sample(t0 + 45)
     rec.close()                        # flushes the partial minute 2
 
-    rows = fetch_all(path, minute_table("SNDK"))
+    rows = fetch_all(path, minute_table("SNDK", "entropy", "lighter-rh"))
     assert len(rows) == 2
-    # (minute_ts, time_utc, symbol, hedge_venue, e_bid, e_ask, h_bid, h_ask,
-    #  p_open, p_high, p_low, p_close, p_mean, p_std, s_mean, s_max,
-    #  b_mean, b_max, samples)
     m1, m2 = rows
-    assert m1[2] == "SNDK" and m1[3] == "lighter-rh"
+    assert m1[I_SYM] == "SNDK" and m1[I_BASE] == "entropy"
+    assert m1[I_HEDGE] == "lighter-rh"
     assert m1[0] == int(t0 // 60) * 60 and m1[0] < m2[0]
-    assert m1[18] == 2 and m2[18] == 1
-    assert abs(m1[8] - 10.0) < 0.2                       # premium open
-    assert abs(m1[9] - 20.0) < 0.2                       # premium high
-    assert abs(m1[11] - 20.0) < 0.2                      # premium close
-    assert abs(m1[12] - 15.0) < 0.2                      # premium mean
-    # executable edges: sell = bid_e/ask_h - 1, buy = bid_h/ask_e - 1
-    assert abs(m2[15] - ((100.09 / 100.01 - 1) * 1e4)) < 0.05   # sell max
-    assert abs(m2[17] - ((99.99 / 100.11 - 1) * 1e4)) < 0.05    # buy max
+    assert m1[I_SAMPLES] == 2 and m2[I_SAMPLES] == 1
+    assert abs(m1[I_P_OPEN] - 10.0) < 0.2                       # premium open
+    assert abs(m1[I_P_HIGH] - 20.0) < 0.2                       # premium high
+    assert abs(m1[I_P_CLOSE] - 20.0) < 0.2                      # premium close
+    assert abs(m1[I_P_MEAN] - 15.0) < 0.2                       # premium mean
+    # executable edges: sell = base_bid/hedge_ask - 1, buy = hedge_bid/base_ask - 1
+    assert abs(m2[I_S_MAX] - ((100.09 / 100.01 - 1) * 1e4)) < 0.05   # sell max
+    assert abs(m2[I_B_MAX] - ((99.99 / 100.11 - 1) * 1e4)) < 0.05    # buy max
     # closes carry the last books
-    assert m2[4] == 100.09 and m2[7] == 100.01
+    assert m2[I_BBASE_BID] == 100.09 and m2[I_HEDGE_ASK] == 100.01
 
-    # one table per symbol — exactly this symbol's table, no legacy one
-    con = duckdb.connect(path, read_only=True)
-    try:
-        tables = [r[0] for r in con.execute(
-            "SELECT table_name FROM duckdb_tables() ORDER BY 1").fetchall()]
-    finally:
-        con.close()
-    assert tables == [minute_table("SNDK")]
+    # one table per (symbol, base, hedge) — exactly this combination's
+    assert tables_of(path) == [minute_table("SNDK", "entropy", "lighter-rh")]
 
 
 def test_stale_books_are_skipped():
@@ -107,56 +120,66 @@ def test_same_minute_restart_overwrites():
     rec = make_recorder(path, e_book, h_book)
     rec.sample(t0 + 5)
     rec.close()
-    assert len(fetch_all(path, minute_table("SNDK"))) == 1
+    assert len(fetch_all(path, minute_table("SNDK", "entropy", "lighter-rh"))) == 1
 
     # next minute: a second row appears
     rec = make_recorder(path, e_book, h_book)
     rec.sample(t0 + 60)
     rec.close()
-    rows = fetch_all(path, minute_table("SNDK"))
+    rows = fetch_all(path, minute_table("SNDK", "entropy", "lighter-rh"))
     assert len(rows) == 2
     assert rows[0][0] != rows[1][0]    # distinct minutes, no dup PK
 
 
-def test_per_symbol_tables_separated():
+def test_per_combination_tables_separated():
     e_book, h_book = OrderBook(), OrderBook()
     set_book(e_book, 100.0, 100.02)
     set_book(h_book, 100.0, 100.02)
     path = os.path.join(tempfile.mkdtemp(), "minutes.duckdb")
 
-    # two recorders, two symbols, one db file, same minute
-    for sym in ("SNDK", "TSLA"):
-        rec = make_recorder(path, e_book, h_book, symbol=sym)
+    # same symbol, three different venue combinations -> three tables
+    combos = [("entropy", "lighter-rh"), ("entropy", "tradexyz"),
+              ("tradexyz", "lighter-rh")]
+    for base_v, hedge_v in combos:
+        rec = make_recorder(path, e_book, h_book,
+                            base_venue=base_v, venue=hedge_v)
         rec.sample(1_700_000_000.0)
         rec.close()
 
-    con = duckdb.connect(path, read_only=True)
-    try:
-        tables = [r[0] for r in con.execute(
-            "SELECT table_name FROM duckdb_tables() ORDER BY 1").fetchall()]
-    finally:
-        con.close()
-    assert tables == [minute_table("SNDK"), minute_table("TSLA")]
+    assert tables_of(path) == sorted(
+        minute_table("SNDK", b, h) for b, h in combos)
+    for base_v, hedge_v in combos:
+        rows = fetch_all(path, minute_table("SNDK", base_v, hedge_v))
+        assert len(rows) == 1
+        assert rows[0][I_BASE] == base_v and rows[0][I_HEDGE] == hedge_v
 
-    sndk = fetch_all(path, minute_table("SNDK"))
-    tsla = fetch_all(path, minute_table("TSLA"))
-    assert len(sndk) == 1 and sndk[0][2] == "SNDK"
-    assert len(tsla) == 1 and tsla[0][2] == "TSLA"
+    # same venues, different symbol -> its own table
+    rec = make_recorder(path, e_book, h_book, symbol="TSLA")
+    rec.sample(1_700_000_000.0)
+    rec.close()
+    tsla = fetch_all(path, minute_table("TSLA", "entropy", "lighter-rh"))
+    assert len(tsla) == 1 and tsla[0][I_SYM] == "TSLA"
 
 
-def test_symbol_sanitization():
-    # name rule: lowercase, anything outside [a-z0-9_] becomes '_'
-    assert minute_table("SNDK") == "minutes_sndk"
-    assert minute_table("BRK.B") == "minutes_brk_b"
-    # documented collision — safe: rows carry the original symbol and the
+def test_table_name_sanitization():
+    # name rule: lowercase, anything outside [a-z0-9_] becomes '_',
+    # the three parts joined by '__'
+    assert minute_table("SNDK", "entropy", "lighter-rh") == \
+        "minutes_sndk__entropy__lighter_rh"
+    assert minute_table("BRK.B", "entropy", "tradexyz") == \
+        "minutes_brk_b__entropy__tradexyz"
+    # documented collision — safe: rows carry the original columns and the
     # PK keeps them distinct
-    assert minute_table("BTC-1") == minute_table("BTC_1")
-    try:
-        minute_table("///")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("empty sanitization must raise")
+    assert minute_table("BTC-1", "entropy", "lighter") == \
+        minute_table("BTC_1", "entropy", "lighter")
+    for bad in (("///", "entropy", "lighter"), ("SNDK", "", "lighter"),
+                ("SNDK", "entropy", "///")):
+        try:
+            minute_table(*bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad} must raise")
 
     # the recorded row keeps the ORIGINAL symbol even when the table name
     # is sanitized
@@ -167,8 +190,8 @@ def test_symbol_sanitization():
     rec = make_recorder(path, e_book, h_book, symbol="BRK.B")
     rec.sample(1_700_000_000.0)
     rec.close()
-    rows = fetch_all(path, "minutes_brk_b")
-    assert len(rows) == 1 and rows[0][2] == "BRK.B"
+    rows = fetch_all(path, "minutes_brk_b__entropy__lighter_rh")
+    assert len(rows) == 1 and rows[0][I_SYM] == "BRK.B"
 
 
 if __name__ == "__main__":

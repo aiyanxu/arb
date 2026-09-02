@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""One-time migration: split the legacy shared `minutes` table per symbol.
+"""One-time migration: move old-shaped minute tables to
+per-(symbol, base_venue, hedge_venue) tables.
 
-Every symbol in the legacy table gets its own minutes_<symbol> table (same
-columns, same primary key). Stop the bot first — DuckDB files are
-single-writer. Idempotent: re-running just re-runs INSERT OR REPLACE with
-no effect. The legacy table is kept unless --drop-old is passed.
+Handles both legacy shapes, stamping every migrated row with
+base_venue='entropy' (the historical truth — entropy was always the base
+leg before it became configurable):
 
-一次性迁移：把旧的共享 `minutes` 表按 symbol 拆分为 minutes_<symbol>
-分表（列与主键不变）。请先停止机器人再运行。可重复执行；默认保留旧表，
+  a. the pre-split shared `minutes` table (symbol + hedge_venue columns)
+  b. per-symbol `minutes_<symbol>` tables (no base_venue column)
+
+Target tables are named minutes_<symbol>__<base>__<hedge> with the 20-column
+layout (base_venue column, base_bid/base_ask). Stop the bot first — DuckDB
+files are single-writer. Idempotent: re-running just re-runs INSERT OR
+REPLACE with no effect. Source tables are kept unless --drop-old is passed.
+
+一次性迁移：把两种旧结构的分钟表迁入按 (symbol, base_venue, hedge_venue)
+组合的分表（全部盖 base_venue='entropy' 章——历史上 entropy 一直是 base
+腿）：a) 分表前的共享 `minutes` 表；b) 按 symbol 分表的
+`minutes_<symbol>` 表。请先停止机器人再运行。可重复执行；默认保留旧表，
 传入 --drop-old 可在迁移成功后删除。
 
 Usage:
@@ -31,16 +41,46 @@ except ImportError as e:
         "this tool needs the entropy_arb package — run it from the repo root "
         "or pip install entropy-arb / 需在仓库根目录运行或先安装 entropy-arb") from e
 
+LEGACY_BASE = "entropy"   # historical truth: entropy was always the base leg
+
+# old 19-column shape -> new 20-column order, stamping base_venue. DuckDB
+# matches INSERT ... SELECT by position.
+_COPY_SQL = (
+    'INSERT OR REPLACE INTO "{dst}" SELECT minute_ts, time_utc, symbol, '
+    "'{base}' AS base_venue, hedge_venue, "
+    "entropy_bid, entropy_ask, hedge_bid, hedge_ask, "
+    "premium_open_bps, premium_high_bps, premium_low_bps, premium_close_bps, "
+    "premium_mean_bps, premium_std_bps, sell_edge_mean_bps, sell_edge_max_bps, "
+    "buy_edge_mean_bps, buy_edge_max_bps, samples "
+    'FROM "{src}" WHERE symbol IS NOT NULL AND hedge_venue IS NOT NULL '
+    "AND symbol = ? AND hedge_venue = ?")
+
+
+def _columns(con, table: str) -> list[str]:
+    return [r[0] for r in con.execute(
+        "SELECT column_name FROM duckdb_columns() "
+        "WHERE schema_name = 'main' AND table_name = ? ORDER BY column_index",
+        [table]).fetchall()]
+
+
+def _minutes_tables(con) -> list[str]:
+    # same escaped-prefix rule as analyze.py; excludes the shared `minutes`
+    return [r[0] for r in con.execute(
+        "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main' "
+        "AND table_name LIKE 'minutes\\_%' ESCAPE '\\' ORDER BY table_name"
+    ).fetchall()]
+
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="split the legacy `minutes` "
-                                            "table into per-symbol tables")
+    p = argparse.ArgumentParser(description="move old-shaped minute tables "
+                                            "to per-(base, hedge, symbol) "
+                                            "tables")
     p.add_argument("--db", default="logs/minutes.duckdb",
                    help="DuckDB database written by the recorder "
                         "(default: logs/minutes.duckdb)")
     p.add_argument("--drop-old", action="store_true",
-                   help="drop the legacy 'minutes' table after a successful "
-                        "migration (default: keep it)")
+                   help="drop the old-shaped source tables after a "
+                        "successful migration (default: keep them)")
     args = p.parse_args(argv)
 
     if not os.path.exists(args.db):
@@ -54,30 +94,49 @@ def main(argv=None) -> int:
               f"first / 数据库被占用，请先停止机器人", file=sys.stderr)
         return 1
     try:
-        has = con.execute(
-            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'minutes'"
-        ).fetchone()
-        if not has or not has[0]:
+        # sources, oldest first: the shared table pre-dates per-symbol
+        # tables, so on overlapping minutes the newer rows win (last write)
+        sources = []
+        has = con.execute("SELECT count(*) FROM duckdb_tables() "
+                          "WHERE table_name = 'minutes'").fetchone()
+        if has and has[0]:
+            sources.append("minutes")
+        sources += [t for t in _minutes_tables(con)
+                    if "base_venue" not in _columns(con, t)]
+        if not sources:
             print(f"nothing to migrate in {args.db}")
             return 0
-        symbols = [r[0] for r in con.execute(
-            "SELECT DISTINCT symbol FROM minutes "
-            "WHERE symbol IS NOT NULL ORDER BY symbol").fetchall()]
+
+        pairs = []                      # (src_table, symbol, hedge_venue)
+        for src in sources:
+            rows = con.execute(
+                f'SELECT DISTINCT symbol, hedge_venue FROM "{src}" '
+                f"WHERE symbol IS NOT NULL AND hedge_venue IS NOT NULL "
+                f"ORDER BY symbol, hedge_venue").fetchall()
+            pairs += [(src, s, v) for s, v in rows]
+        if not pairs:
+            print("old-shaped table(s) present but empty — nothing to "
+                  "migrate / 旧表为空，无需迁移")
+            return 0
+
         con.execute("BEGIN TRANSACTION")
-        for sym in symbols:
-            tbl = minute_table(sym)
-            con.execute(create_table_sql(tbl))
-            # column order matches by construction: both tables use the
-            # same _TABLE_DDL
-            con.execute(f'INSERT OR REPLACE INTO "{tbl}" '
-                        f"SELECT * FROM minutes WHERE symbol = ?", [sym])
-            n = con.execute(f'SELECT count(*) FROM "{tbl}"').fetchone()
-            print(f"{sym!r} -> {tbl}: {n[0] if n else 0} row(s)")
+        for src, sym, hv in pairs:
+            dst = minute_table(sym, LEGACY_BASE, hv)
+            con.execute(create_table_sql(dst))
+            con.execute(_COPY_SQL.format(dst=dst, src=src, base=LEGACY_BASE),
+                        [sym, hv])
+            n = con.execute(f'SELECT count(*) FROM "{dst}"').fetchone()
+            print(f"{src}: {sym!r} x {LEGACY_BASE} x {hv!r} -> {dst}: "
+                  f"{n[0] if n else 0} row(s)")
         if args.drop_old:
-            con.execute("DROP TABLE minutes")
-            print("dropped legacy table 'minutes'")
+            for src in dict.fromkeys(s for s, _, _ in pairs):  # keep order
+                con.execute(f'DROP TABLE "{src}"')
+            print(f"dropped {len(dict.fromkeys(s for s, _, _ in pairs))} "
+                  f"old-shaped table(s)")
         con.execute("COMMIT")
-        print(f"migrated {len(symbols)} symbol(s) in {args.db}")
+        print(f"migrated {len(pairs)} combination(s) from "
+              f"{len(dict.fromkeys(s for s, _, _ in pairs))} table(s) "
+              f"in {args.db}")
         return 0
     except duckdb.Error as e:
         con.execute("ROLLBACK")
