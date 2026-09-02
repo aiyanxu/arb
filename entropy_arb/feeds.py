@@ -95,7 +95,8 @@ class LighterBookFeed:
         while not stop.is_set():
             try:
                 async with ws_connect(self.ws_url, max_size=2**23, open_timeout=10,
-                                      ping_interval=15, ping_timeout=15) as ws:
+                                      ping_interval=15, ping_timeout=15,
+                                      proxy=None) as ws:
                     log.info("[%s] connected (%s)", self.name, self.ws_url)
                     self.book.clear()
                     self._nonce = None
@@ -172,7 +173,8 @@ class HLBookFeed:
             ptask = None
             try:
                 async with ws_connect(self.ws_url, max_size=2**23, open_timeout=10,
-                                      ping_interval=15, ping_timeout=15) as ws:
+                                      ping_interval=15, ping_timeout=15,
+                                      proxy=None) as ws:
                     log.info("[%s] connected (official ws, %s)", self.name, self.coin)
                     self.book.clear()
                     self._snapped = False
