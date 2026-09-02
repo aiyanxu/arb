@@ -114,6 +114,71 @@ entropy-arb                                # 或带覆盖参数：--symbol SNDK 
 可切换为纯日志输出（nohup/systemd 等非终端环境会自动退回纯日志），也可
 设置 `logging.dashboard: false`。
 
+## Docker 部署
+
+镜像内不含任何密钥与配置——`config.yaml`、`symbol_map.yaml`、`.env` 都在
+运行时挂载（已由 `.dockerignore` 排除）。
+
+构建两种镜像：
+
+```bash
+docker build --target record-only -t entropy-arb:record-only .   # 仅基础依赖
+docker build --target live       -t entropy-arb:live .           # + 签名 SDK
+```
+
+仅采集数据（不需要密钥）：
+
+```bash
+mkdir -p logs
+docker run --rm \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -v ./symbol_map.yaml:/app/symbol_map.yaml:ro \
+  -v ./logs:/app/logs \
+  entropy-arb:record-only
+```
+
+实盘交易（无终端仪表盘、崩溃自动重启）：
+
+```bash
+docker run -d --name entropy-arb \
+  --restart unless-stopped --init --stop-grace-period 30s \
+  --env-file .env \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -v ./symbol_map.yaml:/app/symbol_map.yaml:ro \
+  -v ./logs:/app/logs \
+  entropy-arb:live --no-dashboard
+```
+
+或使用 docker compose（推荐——见 `docker-compose.yml`）：
+
+```bash
+cp config.example.yaml config.yaml && cp .env.example .env   # 两个都填好
+docker compose up -d --build                    # 实盘
+docker compose logs -f                          # 控制台日志
+docker compose --profile record up -d --build   # 改为仅采集数据
+docker compose down                             # SIGTERM -> 优雅停机
+```
+
+说明：
+
+- 采集的数据落在宿主机 `./logs`（`minutes.duckdb`、`trades.csv`）。
+  `--no-dashboard` 模式**没有** `logs/engine.log`——控制台输出直接进
+  `docker logs` / `docker compose logs`。
+- 不暴露任何端口（机器人只主动外连）。镜像默认命令是安全的
+  `--record-only --no-dashboard`；实盘必须显式用 `command:` / 参数覆盖。
+- Rich 仪表盘无法在 `docker logs` 中渲染，请用 `docker compose logs -f`，
+  或在 Docker 外运行以使用仪表盘。
+- 改动代码后需重新构建镜像。实盘部署建议按 `pyproject.toml` 中的注释
+  固定 lighter-sdk 的 commit。
+- Linux 宿主机上 `./logs` 需对 uid 1000 可写——在 compose 服务中加
+  `user: "1000:1000"`（Docker Desktop 会自动映射）。
+- 在容器内分析采集数据：
+
+```bash
+docker run --rm --entrypoint python -v ./logs:/app/logs \
+  entropy-arb:record-only tools/analyze.py
+```
+
 ## 数据采集与分析
 
 采集器在所有模式下自动运行（`recorder.enabled: true`）：每秒采样一次两边

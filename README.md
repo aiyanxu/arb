@@ -125,6 +125,72 @@ display the dashboard in Chinese. Use `--no-dashboard` for plain console
 logs (nohup/systemd — off-terminal runs fall back automatically), or set
 `logging.dashboard: false`.
 
+## Docker
+
+The image contains no secrets or config — `config.yaml`, `symbol_map.yaml`
+and `.env` are mounted at runtime (excluded by `.dockerignore`).
+
+Build both variants:
+
+```bash
+docker build --target record-only -t entropy-arb:record-only .   # base deps only
+docker build --target live       -t entropy-arb:live .           # + signing SDKs
+```
+
+Record-only data collection (no credentials needed):
+
+```bash
+mkdir -p logs
+docker run --rm \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -v ./symbol_map.yaml:/app/symbol_map.yaml:ro \
+  -v ./logs:/app/logs \
+  entropy-arb:record-only
+```
+
+Live trading, headless and restarted on failure:
+
+```bash
+docker run -d --name entropy-arb \
+  --restart unless-stopped --init --stop-grace-period 30s \
+  --env-file .env \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -v ./symbol_map.yaml:/app/symbol_map.yaml:ro \
+  -v ./logs:/app/logs \
+  entropy-arb:live --no-dashboard
+```
+
+Or with docker compose (recommended — see `docker-compose.yml`):
+
+```bash
+cp config.example.yaml config.yaml && cp .env.example .env   # fill both in
+docker compose up -d --build                    # live
+docker compose logs -f                          # console log
+docker compose --profile record up -d --build   # record-only variant instead
+docker compose down                             # SIGTERM -> graceful shutdown
+```
+
+Notes:
+
+- Recorded data lands on the host in `./logs` (`minutes.duckdb`,
+  `trades.csv`). In `--no-dashboard` mode there is **no** `logs/engine.log`
+  — console output goes to `docker logs` / `docker compose logs` instead.
+- No ports are exposed (the bot is outbound-only). The default image command
+  is the safe `--record-only --no-dashboard`; going live is always an
+  explicit `command:` / argument override.
+- The Rich dashboard cannot render over `docker logs`; use
+  `docker compose logs -f`, or run outside Docker for the dashboard.
+- Rebuild the image after code changes. For reproducible live deploys pin
+  the `lighter-sdk` commit in `pyproject.toml` (see the comment there).
+- On a Linux host, `./logs` must be writable by uid 1000 — add
+  `user: "1000:1000"` to the compose service (Docker Desktop maps this).
+- Analyze recorded data inside the container:
+
+```bash
+docker run --rm --entrypoint python -v ./logs:/app/logs \
+  entropy-arb:record-only tools/analyze.py
+```
+
 ## Data collection & analysis
 
 The recorder runs automatically in every mode (`recorder.enabled: true`).

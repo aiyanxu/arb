@@ -1,0 +1,65 @@
+# entropy-arb in Docker — compose usage:
+#
+#   live trading:   docker compose up -d --build
+#   record only:    docker compose --profile record up -d --build
+#   console logs:   docker compose logs -f   (no engine.log in --no-dashboard mode)
+#   stop:           docker compose down      (SIGTERM -> graceful shutdown)
+#
+# Before 'up': cp config.example.yaml config.yaml (and cp .env.example .env
+# for live). Single-file mounts create empty directories if the file is
+# missing, which the bot cannot read.
+
+services:
+  entropy-arb:
+    build:
+      context: .
+      target: live                  # slim data-collection image: target: record-only
+    image: entropy-arb:live
+    container_name: entropy-arb
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s          # engine finishes settles; duckdb closed between writes
+    # Credentials are read at runtime, never baked into the image.
+    # 'required: false' lets the bot start without a .env (compose >= 2.24);
+    # on older compose, delete this block or create .env first.
+    env_file:
+      - path: .env
+        required: false
+    # Alternative to .env (load_dotenv does not override pre-set variables):
+    # environment:
+    #   HL_PRIVATE_KEY: ...
+    #   HL_ACCOUNT_ADDRESS: ...
+    #   LIGHTER_ACCOUNT_INDEX: ...
+    #   LIGHTER_API_KEY_INDEX: ...
+    #   LIGHTER_API_PRIVATE_KEY: ...
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro           # strategy — cp config.example.yaml config.yaml
+      - ./symbol_map.yaml:/app/symbol_map.yaml:ro   # delete this line if you have no symbol map
+      - ./logs:/app/logs                            # minutes.duckdb + trades.csv on the host
+    command: ["--no-dashboard"]     # headless; console log -> `docker compose logs -f`
+    # Linux hosts: make ./logs writable by the container user (uid 1000):
+    # user: "1000:1000"
+    # Optional liveness check — there is no HTTP endpoint; pgrep only proves
+    # the process is alive (requires 'procps' added to the runtime image):
+    # healthcheck:
+    #   test: ["CMD", "pgrep", "-f", "entropy-arb"]
+    #   interval: 60s
+    #   timeout: 5s
+    #   retries: 3
+    #   start_period: 60s
+
+  record-only:
+    build:
+      context: .
+      target: record-only
+    image: entropy-arb:record-only
+    container_name: entropy-arb-record
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    profiles: ["record"]            # only starts with: docker compose --profile record up -d
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./symbol_map.yaml:/app/symbol_map.yaml:ro
+      - ./logs:/app/logs
+    command: ["--record-only", "--no-dashboard"]

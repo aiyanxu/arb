@@ -1,0 +1,31 @@
+# VCS / editor
+.git
+.gitignore
+.vscode
+
+# local env & secrets — never baked into an image (mounted at runtime)
+.env
+config.yaml
+symbol_map.yaml
+
+# runtime output (bind-mounted instead)
+logs/
+
+# python artifacts
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+
+# not needed inside the image
+Dockerfile
+docker-compose.yml
+.dockerignore
+plan.md
+tests/
+
+# deliberately kept in context: pyproject.toml, README.md, LICENSE,
+# entropy_arb/, tools/  (README.md + LICENSE are required by pip metadata)
