@@ -1,3 +1,2 @@
 # 需求
-当前程序执行`python3 main.py --record-only --symbol SNDK --hedge lighter-rh`时会将信息写入`logs/minutes.csv`
-现在要使用duckdb替代`logs/minutes.csv`，将信息写入duckdb数据库
+当前程序symbol是从命令行读取，修改为从配置文件config.yaml读取

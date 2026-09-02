@@ -5,7 +5,7 @@
 Open-source two-venue perp arbitrage bot. One leg is always **Entropy**
 (the `io` builder dex on Hyperliquid); the other leg — the hedge — is one of:
 
-| `--hedge` | venue | quote | taker fee | protocol |
+| `hedge_venue` | venue | quote | taker fee | protocol |
 |---|---|---|---|---|
 | `lighter` | Lighter mainnet | USDC | 0 bps | zkLighter ws (diff books, async settle) |
 | `lighter-rh` | Lighter Robinhood chain | **USDG** | 0 bps | zkLighter ws |
@@ -76,10 +76,10 @@ cp config.example.yaml config.yaml       # the strategy (thresholds, sizing, ris
 cp .env.example .env                     # credentials — required to trade
 ```
 
-The markets are **not** in the config file — you state them explicitly on
-every start: `--symbol` (traded on both venues) and `--hedge` (one of
-`lighter`, `lighter-rh`, `tradexyz`; Entropy is always the
-other leg).
+The markets live in `config.yaml`: `symbol` (traded on both venues) and
+`hedge_venue` (one of `lighter`, `lighter-rh`, `tradexyz`; Entropy is always
+the other leg). The `--symbol` / `--hedge` flags override them for a single
+run.
 
 There is **no paper mode** — the bot either collects data (`--record-only`)
 or trades live. Validate with recorded data and tiny position caps, not with
@@ -88,7 +88,8 @@ simulated fills.
 **1. Collect data first** (no credentials needed):
 
 ```bash
-entropy-arb --record-only --symbol SNDK --hedge lighter-rh
+entropy-arb --record-only                  # markets from config.yaml
+entropy-arb --record-only --symbol SNDK --hedge lighter-rh   # override
 ```
 
 Let it run for at least a few hours (a day is better — premiums have
@@ -108,7 +109,7 @@ the smallest position caps that clear the venue minimums:
 
 ```bash
 pip install -e ".[live]"
-entropy-arb --symbol SNDK --hedge lighter-rh
+entropy-arb                                # or with overrides: --symbol SNDK --hedge lighter-rh
 ```
 
 Running without `--record-only` sends real orders immediately once both
@@ -180,13 +181,14 @@ FROM read_csv('logs/minutes.csv');
 
 ## Configuration
 
-Strategy lives in `config.yaml` (validated — unknown keys are startup
-errors), credentials in `.env`, and the markets on the command line
-(`--symbol`, `--hedge`). Full commented reference:
+Strategy and the markets live in `config.yaml` (validated — unknown keys are
+startup errors), credentials in `.env`. Full commented reference:
 [config.example.yaml](config.example.yaml). The essentials:
 
 | key | meaning | default |
 |---|---|---|
+| `symbol` | market traded on both legs | — |
+| `hedge_venue` | the other leg: `lighter` / `lighter-rh` / `tradexyz` | — |
 | `thresholds.midline_bps` | premium center (measure it!) | — |
 | `thresholds.upper_bps` / `lower_bps` | entry bands (> 0) | — |
 | `entropy.dex` | Entropy's dex name on Hyperliquid | `io` |
@@ -205,13 +207,13 @@ errors), credentials in `.env`, and the markets on the command line
 
 - **Entropy / tradexyz (Hyperliquid)** — create an API ("agent") wallet at
   <https://app.hyperliquid.xyz/API>. `HL_PRIVATE_KEY` is the **agent** key,
-  `HL_ACCOUNT_ADDRESS` your main account address. With `--hedge tradexyz`
+  `HL_ACCOUNT_ADDRESS` your main account address. With `hedge_venue: tradexyz`
   both legs share this account by default (one nonce sequence is handled
   internally); set `HL_PRIVATE_KEY_XYZ` / `HL_ACCOUNT_ADDRESS_XYZ`
   to split them. Fund the dex-specific clearinghouses you trade.
 - **Lighter** — `LIGHTER_ACCOUNT_INDEX`, `LIGHTER_API_KEY_INDEX`,
   `LIGHTER_API_PRIVATE_KEY`, registered on the **same deployment** as your
-  `--hedge` flag (mainnet and the Robinhood chain are separate accounts and
+  `hedge_venue` (mainnet and the Robinhood chain are separate accounts and
   keys — see [lighter-python](https://github.com/elliottech/lighter-python)).
 
 ## How execution works

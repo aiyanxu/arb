@@ -1,12 +1,13 @@
-"""Configuration: strategy from a YAML file, credentials from .env, market
-selection (symbol + hedge venue) from the command line, with optional
-per-venue symbol renames from symbol_map.yaml.
+"""Configuration: strategy AND market selection (symbol + hedge venue) from
+a YAML file, credentials from .env, with optional per-venue symbol renames
+from symbol_map.yaml.
 
-The split is deliberate: config.yaml IS the strategy (thresholds, sizing,
-risk) and is safe to share/commit as an example; .env holds only secrets;
-which markets to trade is stated explicitly on every start (--symbol,
---hedge). Every YAML key is validated against the schema below, so a typo
-is an error rather than a setting that silently does nothing.
+The split is deliberate: config.yaml holds the strategy (thresholds, sizing,
+risk) and the markets you trade (symbol, hedge_venue) in one shareable
+example file; .env holds only secrets; --symbol / --hedge are optional
+per-run overrides that win over the YAML. Every YAML key is validated
+against the schema below, so a typo is an error rather than a setting that
+silently does nothing.
 
 Threshold model (fixed numbers the user derives from recorded minute data):
 
@@ -153,6 +154,10 @@ class Config:
 
 # Schema: nested dict of key -> type (or nested dict). Unknown keys are errors.
 _SCHEMA: Dict[str, Any] = {
+    # market selection — optional here; the CLI --symbol / --hedge flags
+    # override these for a single run
+    "symbol": str,
+    "hedge_venue": str,
     "thresholds": {
         "midline_bps": float,
         "upper_bps": float,
@@ -294,7 +299,8 @@ def _env_i(name: str) -> Optional[int]:
 # -------------------------------------------------------------------- loading
 
 def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
-                symbol: str, hedge_venue: str,
+                symbol: Optional[str] = None,
+                hedge_venue: Optional[str] = None,
                 symbol_map_file: str = "symbol_map.yaml") -> Config:
     load_dotenv(env_file)
     try:
@@ -307,14 +313,22 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
             f"config.example.yaml 为 config.yaml 并修改")
     _validate(raw, _SCHEMA)
 
-    symbol = (symbol or "").strip()
+    # market selection: CLI flag wins over config.yaml; at least one source
+    # required. An empty CLI string counts as "not provided" and falls back
+    # to the config value.
+    symbol = (symbol or raw.get("symbol") or "").strip()
     if not symbol:
-        raise ConfigError("--symbol is required, e.g. --symbol SNDK / "
-                          "必须用 --symbol 指定交易品种")
+        raise ConfigError(
+            "symbol is required — set 'symbol:' in config.yaml or pass "
+            "--symbol SNDK / 必须指定交易品种：在 config.yaml 填 symbol，"
+            "或启动时用 --symbol 指定")
+    hedge_venue = hedge_venue or (raw.get("hedge_venue") or "").strip()
     if hedge_venue not in HEDGE_VENUES:
         raise ConfigError(
-            f"--hedge must be one of {list(HEDGE_VENUES)}, got "
-            f"{hedge_venue!r} / --hedge 必须是 {list(HEDGE_VENUES)} 之一")
+            f"hedge_venue must be one of {list(HEDGE_VENUES)}, got "
+            f"{hedge_venue!r} — set 'hedge_venue:' in config.yaml or pass "
+            f"--hedge / 对冲腿必须是 {list(HEDGE_VENUES)} 之一：在 config.yaml "
+            f"填 hedge_venue，或启动时用 --hedge 指定")
 
     # per-venue symbol overrides: DEX naming can differ from the CLI symbol
     symbol_map = _load_symbol_map(symbol_map_file)

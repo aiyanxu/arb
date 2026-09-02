@@ -5,7 +5,7 @@
 开源双交易所永续合约套利机器人。其中一条腿永远是 **Entropy**（Hyperliquid 上的
 `io` builder dex）；另一条腿（对冲腿）三选一：
 
-| `--hedge` | 交易所 | 计价货币 | 吃单费 | 协议 |
+| `hedge_venue` | 交易所 | 计价货币 | 吃单费 | 协议 |
 |---|---|---|---|---|
 | `lighter` | Lighter 主网 | USDC | 0 bps | zkLighter ws（增量订单簿，异步结算） |
 | `lighter-rh` | Lighter Robinhood 链 | **USDG** | 0 bps | zkLighter ws |
@@ -69,10 +69,9 @@ cp config.example.yaml config.yaml       # 策略配置（阈值、规模、风�
 cp .env.example .env                     # 密钥——交易必填
 ```
 
-交易哪个市场**不在**配置文件中——每次启动时用命令行参数显式指定：
-`--symbol`（两个交易所共同交易的品种）和 `--hedge`（三选一：
-`lighter`、`lighter-rh`、`tradexyz`；Entropy 永远是
-另一条腿）。
+交易市场现在就在 `config.yaml` 里：`symbol`（两个交易所共同交易的品种）和
+`hedge_venue`（三选一：`lighter`、`lighter-rh`、`tradexyz`；Entropy 永远是
+另一条腿）。单次启动可用 `--symbol` / `--hedge` 覆盖配置文件。
 
 本机器人**没有模拟盘**——要么采集数据（`--record-only`），要么实盘交易。
 请用采集的数据和最小的仓位上限来验证策略，而不是模拟成交。
@@ -80,7 +79,8 @@ cp .env.example .env                     # 密钥——交易必填
 **第一步：先采集数据**（不需要任何密钥）：
 
 ```bash
-entropy-arb --record-only --symbol SNDK --hedge lighter-rh
+entropy-arb --record-only                  # 交易市场来自 config.yaml
+entropy-arb --record-only --symbol SNDK --hedge lighter-rh   # 覆盖配置
 ```
 
 至少运行几个小时（最好一整天——溢价存在日内规律），数据写入
@@ -100,7 +100,7 @@ python3 tools/analyze.py
 
 ```bash
 pip install -e ".[live]"
-entropy-arb --symbol SNDK --hedge lighter-rh
+entropy-arb                                # 或带覆盖参数：--symbol SNDK --hedge lighter-rh
 ```
 
 不带 `--record-only` 运行时，只要两边行情就绪且溢价越过带宽，就会立即
@@ -166,12 +166,14 @@ FROM read_csv('logs/minutes.csv');
 
 ## 配置说明
 
-策略在 `config.yaml`（严格校验——未知键名直接报错），密钥在 `.env`。
-交易市场由命令行指定（`--symbol`、`--hedge`）。完整的双语注释参考：
-[config.example.yaml](config.example.yaml)。核心项：
+策略与交易市场都在 `config.yaml`（严格校验——未知键名直接报错），密钥在
+`.env`。完整的双语注释参考：[config.example.yaml](config.example.yaml)。
+核心项：
 
 | 键 | 含义 | 默认值 |
 |---|---|---|
+| `symbol` | 两条腿共同交易的品种 | — |
+| `hedge_venue` | 对冲腿：`lighter` / `lighter-rh` / `tradexyz` | — |
 | `thresholds.midline_bps` | 溢价中枢（必须实测！） | — |
 | `thresholds.upper_bps` / `lower_bps` | 入场带宽（> 0） | — |
 | `entropy.dex` | Entropy 在 Hyperliquid 上的 dex 名 | `io` |
@@ -191,11 +193,11 @@ FROM read_csv('logs/minutes.csv');
 - **Entropy / tradexyz（Hyperliquid）** —— 在
   <https://app.hyperliquid.xyz/API> 创建 API（agent）钱包。`HL_PRIVATE_KEY`
   填 **agent 钱包私钥**，`HL_ACCOUNT_ADDRESS` 填主账户地址。当
-  `--hedge tradexyz` 时两条腿默认共用该账户（内部自动共享 nonce 序列）；
+  `hedge_venue: tradexyz` 时两条腿默认共用该账户（内部自动共享 nonce 序列）；
   如需分开，设置 `HL_PRIVATE_KEY_XYZ` / `HL_ACCOUNT_ADDRESS_XYZ`。注意给
   所交易的各 dex 分别充入保证金。
 - **Lighter** —— `LIGHTER_ACCOUNT_INDEX`、`LIGHTER_API_KEY_INDEX`、
-  `LIGHTER_API_PRIVATE_KEY`，必须注册在与启动参数 `--hedge` **相同的部署**上
+  `LIGHTER_API_PRIVATE_KEY`，必须注册在与配置的 `hedge_venue` **相同的部署**上
   （主网与 Robinhood 链是两套独立的账户和密钥——参见
   [lighter-python](https://github.com/elliottech/lighter-python)）。
 

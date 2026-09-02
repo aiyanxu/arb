@@ -2,25 +2,26 @@
 #
 #   cp config.example.yaml config.yaml     then edit / 复制后修改
 #
-# This file IS the strategy. Credentials never live here — they go in .env
-# (see .env.example). Every key is validated: a typo is a startup error, not
-# a setting that silently does nothing.
-# 本文件就是策略本身。密钥绝不放在这里（见 .env.example）。所有键名都会被校验：
-# 拼写错误会直接报错，而不是静默失效。
+# This file IS the strategy AND the markets. Credentials never live here —
+# they go in .env (see .env.example). Every key is validated: a typo is a
+# startup error, not a setting that silently does nothing.
+# 本文件就是策略与交易市场本身。密钥绝不放在这里（见 .env.example）。所有键名
+# 都会被校验：拼写错误会直接报错，而不是静默失效。
 #
-# WHICH MARKETS to trade is NOT in this file — you state it explicitly on
-# every start with command-line flags:
-#     python3 main.py --symbol SNDK --hedge lighter-rh
-# Entropy is always one leg; --hedge picks the other:
+# ============================== MARKETS / 交易市场 ==========================
+# Entropy is always one leg; hedge_venue picks the other:
 #   lighter      Lighter mainnet            (USDC, 0 bps taker)
 #   lighter-rh   Lighter Robinhood chain    (USDG, 0 bps taker)
 #   tradexyz     Hyperliquid trade.xyz dex  (USDC, ~1 bps taker)
+# Per-run override: entropy-arb --symbol SNDK --hedge lighter-rh
+# Entropy 永远是其中一条腿；hedge_venue 选择对冲腿（三选一，见上表）。
+# 单次启动可用 --symbol / --hedge 覆盖本文件的设置。
+symbol: SNDK
+hedge_venue: lighter-rh
+#
 # If a venue names the same market differently (e.g. TTSLA on trade.xyz for
-# CLI symbol SNDK), add an entry in symbol_map.yaml — see that file.
-# 交易哪个市场不在本文件中配置——每次启动时用命令行参数显式指定：
-#     python3 main.py --symbol SNDK --hedge lighter-rh
-# Entropy 永远是其中一条腿；--hedge 选择对冲腿（三选一，见上表）。
-# 某 venue 的命名与命令行 symbol 不同（如 trade.xyz 上的 TTSLA）时，
+# symbol SNDK), add an entry in symbol_map.yaml — see that file.
+# 某 venue 的命名与配置的 symbol 不同（如 trade.xyz 上的 TTSLA）时，
 # 在 symbol_map.yaml 中加一条映射即可，详见该文件。
 
 # ============================ THE SIGNAL / 信号 ============================

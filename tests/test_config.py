@@ -36,7 +36,8 @@ thresholds:
 """
 
 
-def load(yaml_text: str, symbol="SNDK", hedge="lighter-rh", map_text=None):
+def load(yaml_text: str, symbol: str | None = "SNDK",
+         hedge: str | None = "lighter-rh", map_text: str | None = None):
     map_file = (write_map(map_text) if map_text is not None
                 else NO_MAP)
     return load_config(write_tmp(yaml_text), NO_ENV,
@@ -45,8 +46,9 @@ def load(yaml_text: str, symbol="SNDK", hedge="lighter-rh", map_text=None):
 
 
 def test_example_config_loads():
-    cfg = load_config(EXAMPLE, NO_ENV, symbol="SNDK",
-                      hedge_venue="lighter-rh", symbol_map_file=NO_MAP)
+    # the example file is self-sufficient: markets come from the YAML itself
+    cfg = load_config(EXAMPLE, NO_ENV, symbol=None,
+                      hedge_venue=None, symbol_map_file=NO_MAP)
     assert cfg.symbol == "SNDK"
     assert cfg.entropy.kind == "hl" and cfg.entropy.hl_dex == "io"
     assert cfg.hedge_venue == "lighter-rh"
@@ -88,12 +90,41 @@ def test_unknown_key_rejected():
                  "sizing.take_fractionn")
 
 
-def test_markets_no_longer_config_keys():
-    # symbol / hedge_venue moved to --symbol / --hedge: leftovers in the
-    # YAML must fail loudly, not silently override the flags
-    expect_error("symbol: SNDK\n" + MINIMAL, "unknown config key 'symbol'")
-    expect_error("hedge_venue: tradexyz\n" + MINIMAL,
-                 "unknown config key 'hedge_venue'")
+def test_markets_in_config():
+    # symbol / hedge_venue now live in the YAML; the load() helper's
+    # explicit values stand in for what the CLI would pass
+    cfg = load("symbol: ETH\nhedge_venue: tradexyz\n" + MINIMAL,
+               symbol="SNDK", hedge="lighter-rh")
+    assert cfg.symbol == "SNDK"                      # CLI wins over the file
+    assert cfg.hedge_venue == "lighter-rh"
+    # with no CLI value the YAML decides
+    cfg = load("symbol: ETH\nhedge_venue: tradexyz\n" + MINIMAL,
+               symbol=None, hedge=None)
+    assert cfg.symbol == "ETH"
+    assert cfg.hedge_venue == "tradexyz"
+    assert cfg.hedge.kind == "hl" and cfg.hedge.hl_dex == "xyz"
+
+
+def test_markets_required():
+    # neither the CLI nor config.yaml provides a market -> loud error
+    expect_error(MINIMAL, "symbol is required", symbol=None, hedge=None)
+    # symbol resolves from the helper default, hedge is missing
+    expect_error(MINIMAL, "hedge_venue must be one of",
+                 symbol="SNDK", hedge=None)
+
+
+def test_bad_config_market_values():
+    # hedge=None lets the YAML value through; symbol keeps the helper
+    # default so the symbol check passes first
+    expect_error(MINIMAL + "\nhedge_venue: binance\n",
+                 "hedge_venue must be one of", hedge=None)
+    expect_error(MINIMAL + "\nsymbol: ''\n", "symbol is required",
+                 symbol=None, hedge=None)
+    # YAML 1.1 gotchas: a bare NO/on is a bool, digits are ints
+    expect_error(MINIMAL + "\nsymbol: 5\n", "'symbol' must be a string",
+                 symbol=None, hedge=None)
+    expect_error(MINIMAL + "\nhedge_venue: true\n",
+                 "'hedge_venue' must be a string", symbol=None, hedge=None)
 
 
 def test_bad_cli_markets():

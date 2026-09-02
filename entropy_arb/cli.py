@@ -2,19 +2,22 @@
 """entropy-arb CLI — the package's command-line entry point.
 
     # collect minute data only — no strategy, no credentials needed
+    entropy-arb --record-only            # markets come from config.yaml
+    # equivalent: python -m entropy_arb --record-only
+
+    # per-run override — wins over config.yaml
     entropy-arb --record-only --symbol SNDK --hedge lighter-rh
-    # equivalent: python -m entropy_arb --record-only --symbol SNDK --hedge lighter-rh
 
     # LIVE trading: real orders, real money (needs .env credentials)
-    entropy-arb --symbol SNDK --hedge lighter-rh
+    entropy-arb
 
---symbol and --hedge are required on every start: the markets you trade are
-an explicit decision, not a config default. Venue-native symbol names can
-differ (e.g. trade.xyz lists SNDK as TTSLA) — put those in symbol_map.yaml,
-loaded automatically when the file exists. Add --cn for a Chinese-language
-dashboard. There is no paper mode. Collect data with --record-only, set
-your thresholds with tools/analyze.py, then go live with small position
-caps.
+The markets you trade live in config.yaml (symbol:, hedge_venue:);
+--symbol and --hedge are optional per-run overrides that win over the file.
+Venue-native symbol names can differ (e.g. trade.xyz lists SNDK as TTSLA) —
+put those in symbol_map.yaml, loaded automatically when the file exists. Add
+--cn for a Chinese-language dashboard. There is no paper mode. Collect data
+with --record-only, set your thresholds with tools/analyze.py, then go live
+with small position caps.
 
 On a terminal the bot shows a live Rich dashboard (books, signal, positions,
 PnL, last executions) and writes log lines to logging.file; use
@@ -83,19 +86,20 @@ def main() -> None:
         description="Two-venue LIVE arbitrage: Entropy vs Lighter mainnet / "
                     "Lighter Robinhood / trade.xyz. Without --record-only, "
                     "real orders are sent.")
-    p.add_argument("--symbol", required=True,
-                   help="symbol traded on both venues, e.g. SNDK / "
-                        "两个交易所共同交易的品种")
-    p.add_argument("--hedge", required=True, choices=HEDGE_VENUES,
+    p.add_argument("--symbol", default=None,
+                   help="override the symbol from config.yaml, e.g. SNDK / "
+                        "覆盖 config.yaml 中的交易品种")
+    p.add_argument("--hedge", default=None, choices=HEDGE_VENUES,
                    metavar="VENUE",
-                   help=f"hedge venue, one of: {', '.join(HEDGE_VENUES)} / "
+                   help=f"override the hedge venue from config.yaml, one of: "
+                        f"{', '.join(HEDGE_VENUES)} / 覆盖 config.yaml 中的"
                         f"对冲腿，三选一")
     p.add_argument("--config", default="config.yaml",
                    help="strategy config (default: config.yaml)")
     p.add_argument("--env-file", default=".env",
                    help="credentials file (default: .env)")
     p.add_argument("--symbol-map", default="symbol_map.yaml",
-                   help="CLI symbol -> venue symbol overrides "
+                   help="symbol -> venue symbol overrides "
                         "(default: symbol_map.yaml, missing file = no "
                         "overrides / symbol 映射表，文件不存在则为空)")
     p.add_argument("--record-only", action="store_true",
