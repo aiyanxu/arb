@@ -14,6 +14,7 @@
 #   lighter     Lighter mainnet          (USDC, 0 bps taker)
 #   lighter-rh  Lighter Robinhood chain  (USDG, 0 bps taker)
 #   tradexyz    Hyperliquid trade.xyz dex (USDC, ~1 bps taker)
+#   aster       Aster DEX V3 perps       (USDT, ~4.5 bps taker, one-way mode only)
 # base_venue defaults to entropy when omitted.
 # Per-run override: entropy-arb --symbol SNDK --base entropy --hedge lighter-rh
 # 任意 venue 均可作为 base 或对冲腿（两腿不能相同），base_venue 缺省为 entropy。

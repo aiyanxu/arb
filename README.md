@@ -3,7 +3,7 @@
 **[中文文档 / Chinese documentation → README.zh-CN.md](README.zh-CN.md)**
 
 Open-source two-venue perp arbitrage bot. Both legs are configurable — either
-can be any of the four supported venues (the two legs must differ); the
+can be any of the five supported venues (the two legs must differ); the
 **base** leg is the premium's numerator, the **hedge** leg its denominator
 (`base_venue` defaults to `entropy`):
 
@@ -13,6 +13,7 @@ can be any of the four supported venues (the two legs must differ); the
 | `lighter` | Lighter mainnet | USDC | 0 bps | zkLighter ws (diff books, async settle) |
 | `lighter-rh` | Lighter Robinhood chain | **USDG** | 0 bps | zkLighter ws |
 | `tradexyz` | Hyperliquid trade.xyz dex | USDC | ~1 bps | HL l2Book, sync IOC settle |
+| `aster` | Aster DEX V3 perps | USDT | ~4.5 bps | Aster fapi ws (top-20 snapshots), sync IOC settle |
 
 > **Referral links** — signing up through these supports this project:
 > - Entropy — Tier 4 referral, 100% rebates: <https://entropy.io/?r=yourquantguy>
@@ -317,6 +318,14 @@ its own block.
   `LIGHTER_HEDGE_ACCOUNT_INDEX` / `LIGHTER_HEDGE_API_KEY_INDEX` /
   `LIGHTER_HEDGE_API_PRIVATE_KEY` instead (no fallback — the deployments
   have separate accounts).
+- **aster** — create a Pro API wallet at
+  <https://www.asterdex.com/en/api-wallet> (switch to "Pro API" at the top).
+  `ASTER_PRIVATE_KEY` is the **API (agent) wallet's** key;
+  `ASTER_ACCOUNT_ADDRESS` is your **main wallet address** — it participates
+  in every signature and cannot be derived from the API key, so both are
+  required. The account must be in **one-way** position mode (hedge mode is
+  refused at startup), and the host clock should be NTP-synced (signed
+  requests carry a microsecond nonce).
 
 ## How execution works
 
@@ -345,9 +354,10 @@ entropy_arb/cli.py       CLI entry — entropy-arb / python -m entropy_arb
 entropy_arb/__main__.py  python -m entropy_arb launcher
 entropy_arb/config.py    YAML + .env contract, validation
 entropy_arb/book.py      order books + fee-aware crossing/sizing math
-entropy_arb/feeds.py     official HL ws + zkLighter ws book feeds
+entropy_arb/feeds.py     official HL ws + zkLighter ws + Aster ws book feeds
 entropy_arb/venue_hl.py  Hyperliquid dex adapter (Entropy, tradexyz)
 entropy_arb/venue_lighter.py  zkLighter adapter (mainnet, Robinhood chain)
+entropy_arb/venue_aster.py    Aster DEX V3 adapter (EIP-712 signed REST)
 entropy_arb/engine.py    the two-venue strategy loop
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars

@@ -8,6 +8,10 @@ LighterBookFeed: zkLighter order_book channel (snapshot + diffs, server
 HLBookFeed: the official Hyperliquid websocket (wss://api.hyperliquid.xyz/ws)
     l2Book channel with fast snapshots and client app-pings. Every price this
     bot trades on comes straight from the exchange that will fill the order.
+AsterBookFeed: Aster fapi websocket (wss://fstream.asterdex.com) depth20
+    channel — every frame is an authoritative full top-20 snapshot, guarded
+    only by update-id monotonicity. No subscribe message (raw stream) and no
+    app-level ping (the server sends protocol pings, auto-answered).
 
 Both touch the book on any inbound frame (connection-based freshness: a quiet
 market is not stale, only a dead feed is) and reconnect with backoff.
@@ -114,6 +118,66 @@ class LighterBookFeed:
                             await self._subscribe(ws)
                         elif t == "ping":
                             await ws.send(json.dumps({"type": "pong"}))
+                        if stop.is_set():
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("[%s] ws error: %s — reconnect in %.0fs",
+                            self.name, e, backoff)
+            self.book.ready = False
+            self.notify()
+            if stop.is_set():
+                break
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+
+class AsterBookFeed:
+    """Aster fapi top-20 depth snapshot consumer for one symbol (e.g. 'BTCUSDT')."""
+
+    def __init__(self, name: str, ws_url: str, symbol: str, book: OrderBook,
+                 notify: Callable[[], None]) -> None:
+        self.name = name
+        self.ws_url = ws_url
+        self.symbol = symbol.upper()
+        self.book = book
+        self.notify = notify
+        self._last_u: Optional[int] = None
+        self._snapped = False
+
+    def _on_frame(self, msg: dict) -> None:
+        self.book.touch()
+        if msg.get("e") != "depthUpdate" or msg.get("s") != self.symbol:
+            return
+        u = msg.get("u")
+        if not isinstance(u, int):
+            return
+        if self._last_u is not None and u <= self._last_u:
+            return                      # stale/replayed frame — drop
+        self._last_u = u
+        self.book.apply_aster(msg.get("b") or [], msg.get("a") or [])
+        if not self._snapped:
+            self._snapped = True
+            log.info("[%s] snapshot: %d bids / %d asks", self.name,
+                     len(self.book.bids), len(self.book.asks))
+        self.notify()
+
+    async def run(self, stop: asyncio.Event) -> None:
+        url = f"{self.ws_url}/ws/{self.symbol.lower()}@depth20@100ms"
+        backoff = 1.0
+        while not stop.is_set():
+            try:
+                async with ws_connect(url, max_size=2**23, open_timeout=10,
+                                      ping_interval=15, ping_timeout=15,
+                                      proxy=None) as ws:
+                    log.info("[%s] connected (%s)", self.name, self.symbol)
+                    self.book.clear()
+                    self._last_u = None
+                    self._snapped = False
+                    async for raw in ws:
+                        backoff = 1.0
+                        self._on_frame(json.loads(raw))
                         if stop.is_set():
                             break
             except asyncio.CancelledError:

@@ -1,5 +1,2 @@
-# 背景
-目前跨所套利，entropy所有作为base而存在，现在希望可以在config.yaml中指定base和hedge_venue, 包括cli参数也可进行指定
-
-要求
-- 采样数据时，最新需求下base, hedge, symbol 对应一张表
+# 需求
+当前项目加入对aster dex的支持(新增`venue_aster.py`)，可参考 `venue_hl.py` 和 `venue_lighter.py`

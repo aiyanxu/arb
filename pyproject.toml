@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entropy-arb"
-description = "Two-venue perp arbitrage bot — Entropy vs Lighter mainnet / Lighter Robinhood / trade.xyz"
+description = "Two-venue perp arbitrage bot — Entropy vs Lighter mainnet / Lighter Robinhood / trade.xyz / Aster"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "yourQuantGuy" }]
-keywords = ["arbitrage", "hyperliquid", "lighter", "perpetual", "trading"]
+keywords = ["arbitrage", "hyperliquid", "lighter", "aster", "perpetual", "trading"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",

@@ -1,7 +1,7 @@
 # symbol_map.yaml — 配置 symbol -> venue-native symbol 映射表
 #
 # 键 = config.yaml 中配置的 symbol（可被 --symbol 覆盖）；值 = 各 venue 的实际命名
-# venue 可选: entropy / lighter / lighter-rh / tradexyz
+# venue 可选: entropy / lighter / lighter-rh / tradexyz / aster
 # 两条腿各自按自己的 venue 名解析（如 base=tradexyz 时查 tradexyz 键）
 # 未列出的 venue、未命中的 symbol 均沿用配置的 symbol
 # （键区分大小写、精确匹配；文件不存在视为空表）

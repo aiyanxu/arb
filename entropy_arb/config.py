@@ -34,10 +34,12 @@ from dotenv import load_dotenv
 
 HL_API_URL = "https://api.hyperliquid.xyz"
 HL_WS_URL = "wss://api.hyperliquid.xyz/ws"   # official ws — the only HL feed used
+ASTER_API_URL = "https://fapi.asterdex.com"  # V3 futures API
+ASTER_WS_URL = "wss://fstream.asterdex.com"
 
 # Any venue can be either leg (base or hedge); the two legs must differ.
 # 任意 venue 均可作为 base 或 hedge 腿，但两条腿不能相同。
-VENUES = ("entropy", "lighter", "lighter-rh", "tradexyz")
+VENUES = ("entropy", "lighter", "lighter-rh", "tradexyz", "aster")
 DEFAULT_BASE_VENUE = "entropy"
 
 
@@ -65,7 +67,7 @@ LIGHTER_PROFILES: Dict[str, LighterProfile] = {
 @dataclass(frozen=True)
 class VenueSpec:
     """Static per-venue facts (either leg is built from these + the yaml)."""
-    kind: str                     # "hl" | "lighter"
+    kind: str                     # "hl" | "lighter" | "aster"
     label: str                    # display name: "ENTROPY" | "XYZ" | ...
     hl_dex: str                   # default dex for hl venues ("" for lighter)
     fee_bps: float                # venue taker fee default
@@ -82,6 +84,7 @@ VENUE_REGISTRY: Dict[str, VenueSpec] = {
                          LIGHTER_PROFILES["lighter"]),
     "lighter-rh": VenueSpec("lighter", "RH", "", 0.0, 30,
                             LIGHTER_PROFILES["lighter-rh"]),
+    "aster": VenueSpec("aster", "ASTER", "", 4.5, 120),
 }
 
 
@@ -108,9 +111,20 @@ class HLCreds:
 
 
 @dataclass
+class AsterCreds:
+    private_key: Optional[str]        # API (agent) wallet key — does the signing
+    account_address: Optional[str]    # master wallet — the "user" param, NOT
+                                      # derivable from the signer key
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.private_key) and bool(self.account_address)
+
+
+@dataclass
 class VenueConf:
     key: str                  # "base" | "hedge"
-    kind: str                 # "hl" | "lighter"
+    kind: str                 # "hl" | "lighter" | "aster"
     label: str                # human name for logs, e.g. "ENTROPY", "RH"
     symbol: str
     fee_bps: float
@@ -122,6 +136,8 @@ class VenueConf:
     # lighter
     lighter_profile: Optional[LighterProfile] = None
     lighter_creds: Optional[LighterCreds] = None
+    # aster
+    aster_creds: Optional[AsterCreds] = None
 
 
 @dataclass
@@ -175,6 +191,9 @@ class Config:
                 return False
             if v.kind == "lighter" and not (v.lighter_creds
                                             and v.lighter_creds.complete):
+                return False
+            if v.kind == "aster" and not (v.aster_creds
+                                          and v.aster_creds.complete):
                 return False
         return True
 
@@ -342,9 +361,9 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str,
     if "dex" in sec and spec.kind != "hl":
         raise ConfigError(
             f"'{role}.dex' only applies to Hyperliquid venues — {venue!r} is "
-            f"a Lighter deployment / dex 仅适用于 Hyperliquid 交易所")
+            f"a Lighter deployment or Aster / dex 仅适用于 Hyperliquid 交易所")
     fee = float(sec.get("taker_fee_bps", spec.fee_bps))
-    if spec.kind == "hl" and fee < spec.fee_bps:
+    if spec.kind in ("hl", "aster") and fee < spec.fee_bps:
         # underestimating a venue's fee makes every threshold systematically
         # too loose — never let it pass silently
         raise ConfigError(
@@ -369,6 +388,16 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str,
                          orders_per_min=orders,
                          lighter_profile=spec.lighter_profile,
                          lighter_creds=creds)
+
+    if spec.kind == "aster":
+        # aster can occupy at most one leg (the two legs must differ), so
+        # there is no hedge-variant block like LIGHTER_HEDGE_* — no fallback
+        # either: the master wallet address cannot be derived from the key.
+        creds = AsterCreds(_env_s("ASTER_PRIVATE_KEY"),
+                           _env_s("ASTER_ACCOUNT_ADDRESS"))
+        return VenueConf(key=role, kind="aster", label=spec.label,
+                         symbol=symbol, fee_bps=fee, cap_usd=cap,
+                         orders_per_min=orders, aster_creds=creds)
 
     if venue == "tradexyz":
         hc = HLCreds(_env_s("HL_PRIVATE_KEY_XYZ") or _env_s("HL_PRIVATE_KEY"),

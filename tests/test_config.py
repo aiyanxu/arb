@@ -290,6 +290,73 @@ def test_nonpositive_band():
                  "must be > 0")
 
 
+# ----------------------------------------------------------------- aster
+
+def test_aster_registry():
+    from entropy_arb.config import VENUES, VENUE_REGISTRY
+    assert "aster" in VENUES
+    spec = VENUE_REGISTRY["aster"]
+    assert spec.kind == "aster" and spec.label == "ASTER"
+    assert spec.fee_bps == 4.5 and spec.hl_dex == ""
+
+
+def test_aster_hedge():
+    cfg = load(MINIMAL, hedge="aster")
+    assert cfg.hedge.kind == "aster" and cfg.hedge.label == "ASTER"
+    assert cfg.hedge.fee_bps == 4.5
+    assert cfg.hedge.aster_creds is not None
+    assert not cfg.hedge.aster_creds.complete     # NO_ENV has no credentials
+    assert not cfg.creds_complete
+    assert cfg.hedge.lighter_profile is None and cfg.hedge.hl_creds is None
+
+
+def test_aster_base():
+    cfg = load(MINIMAL, base="aster", hedge="entropy")
+    assert cfg.base.kind == "aster" and cfg.base.key == "base"
+    assert cfg.hedge.kind == "hl" and cfg.hedge.hl_dex == "io"
+
+
+def test_aster_env_creds_complete():
+    env = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+    env.write("HL_PRIVATE_KEY=0xhl\n"
+              "ASTER_PRIVATE_KEY=0xabc\nASTER_ACCOUNT_ADDRESS=0xdef\n")
+    env.close()
+    try:
+        cfg = load_config(write_tmp(MINIMAL), env.name,
+                          symbol="BTC", base_venue="entropy",
+                          hedge_venue="aster", symbol_map_file=NO_MAP)
+        assert cfg.hedge.aster_creds.private_key == "0xabc"
+        assert cfg.hedge.aster_creds.account_address == "0xdef"
+        assert cfg.hedge.aster_creds.complete
+        assert cfg.creds_complete
+    finally:
+        os.unlink(env.name)
+
+
+def test_aster_fee_below_default_rejected():
+    expect_error(MINIMAL + "\nhedge:\n  taker_fee_bps: 0.0\n",
+                 "below the venue default", hedge="aster")
+    expect_error(MINIMAL + "\nbase:\n  taker_fee_bps: 1.0\n",
+                 "below the venue default", base="aster", hedge="entropy")
+
+
+def test_aster_fee_at_or_above_default_ok():
+    cfg = load(MINIMAL + "\nhedge:\n  taker_fee_bps: 5.0\n", hedge="aster")
+    assert cfg.hedge.fee_bps == 5.0
+
+
+def test_dex_on_aster_rejected():
+    expect_error(MINIMAL + "\nhedge:\n  dex: io\n",
+                 "only applies to Hyperliquid", hedge="aster")
+
+
+def test_symbol_map_aster():
+    cfg = load(MINIMAL, symbol="BTC", hedge="aster",
+               map_text="BTC:\n  aster: BTCUSDT\n")
+    assert cfg.hedge.symbol == "BTCUSDT"
+    assert cfg.base.symbol == "BTC"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

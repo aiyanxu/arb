@@ -1,7 +1,8 @@
 """Order book state and fee-aware arbitrage sizing.
 
 One book class serves both feed protocols: zkLighter sends a snapshot plus
-diffs (dict maintenance), Hyperliquid's l2Book sends full snapshots.
+diffs (dict maintenance), Hyperliquid and Aster send full snapshots (HL's
+l2Book as {"px","sz"} objects, Aster's depth stream as ["px","sz"] pairs).
 Freshness is connection-based (any inbound ws frame touches alive_ts): a quiet
 market is not stale, only a dead feed is.
 """
@@ -53,6 +54,14 @@ class OrderBook:
                      for l in levels[0] if float(l["sz"]) > 0}
         self.asks = {float(l["px"]): float(l["sz"])
                      for l in levels[1] if float(l["sz"]) > 0}
+        self.ready = True
+        self.last_update_ts = time.time()
+        self.touch()
+
+    # ---- Aster full top-N snapshot (b/a: [["px", "sz"], ...]) ----
+    def apply_aster(self, bids: list, asks: list) -> None:
+        self.bids = {float(px): float(sz) for px, sz in bids if float(sz) > 0}
+        self.asks = {float(px): float(sz) for px, sz in asks if float(sz) > 0}
         self.ready = True
         self.last_update_ts = time.time()
         self.touch()
