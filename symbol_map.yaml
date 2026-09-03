@@ -11,5 +11,14 @@
 ANTH:
   entropy: ANTH
   lighter-rh: ANTHROPIC
-# BTC:
-#   lighter-rh: BTC-USD
+SNDK:
+  entropy: SNDK
+  lighter-rh: SNDK
+  lighter: SNDK
+  aster: SNDKUSDT
+  tradexyz: SNDK
+BTC:
+  lighter: BTC
+  lighter-rh: BTC
+  aster: BTCUSD1
+  tradexyz: BTC
