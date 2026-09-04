@@ -3,7 +3,7 @@
 **[English documentation / 英文文档 → README.md](README.md)**
 
 开源双交易所永续合约套利机器人。两条腿均可配置——任意一条腿都可以是以下
-五个交易所之一（两腿不能相同）；**base** 腿是溢价的分子，**hedge** 腿是分母
+六个交易所之一（两腿不能相同）；**base** 腿是溢价的分子，**hedge** 腿是分母
 （`base_venue` 缺省为 `entropy`）：
 
 | venue | 交易所 | 计价货币 | 吃单费 | 协议 |
@@ -13,6 +13,7 @@
 | `lighter-rh` | Lighter Robinhood 链 | **USDG** | 0 bps | zkLighter ws |
 | `tradexyz` | Hyperliquid trade.xyz dex | USDC | ~1 bps | HL l2Book，IOC 同步结算 |
 | `aster` | Aster DEX V3 合约 | USDT | ~4.5 bps | Aster fapi ws（top-20 快照），IOC 同步结算 |
+| `polymarket` | Polymarket 永续 | pUSD | ~4 bps | Polymarket perps ws（100ms 全量快照），IOC + REST 轮询结算 |
 
 > **推荐链接** —— 通过以下链接注册即可支持本项目：
 > - Entropy — Tier 4 推荐，100% 返佣：<https://entropy.io/?r=yourquantguy>
@@ -295,6 +296,12 @@ FROM read_csv('logs/minutes.csv');
   当**两条腿**都是 Lighter 部署时，hedge 腿改读
   `LIGHTER_HEDGE_ACCOUNT_INDEX` / `LIGHTER_HEDGE_API_KEY_INDEX` /
   `LIGHTER_HEDGE_API_PRIVATE_KEY`（无回退——两个部署账户独立）。
+- **polymarket** —— 运行一次 `python tools/polymarket_make_proxy.py
+  --owner-key 0x...`：脚本会新建 PROXY 钱包并用 OWNER 钱包完成 EIP-712
+  createProxy 签名，打印 `POLYMARKET_PROXY_ADDRESS` /
+  `POLYMARKET_PROXY_PRIVATE_KEY` / `POLYMARKET_PROXY_SECRET` 填入 .env。
+  凭据约 **1 周过期**——过期后重跑脚本并三项一起替换（需要纳入运维节奏）。
+  交易签名使用 PROXY 私钥，绝不使用 owner 私钥。
 - **aster** —— 在 <https://www.asterdex.com/en/api-wallet> 创建 Pro API 钱包
   （页面顶部切换到 "Pro API"）。`ASTER_PRIVATE_KEY` 填 **API (agent) 钱包**
   私钥；`ASTER_ACCOUNT_ADDRESS` 填**主钱包地址**——它参与每笔签名且无法由
@@ -325,10 +332,11 @@ entropy_arb/cli.py       CLI 入口 — entropy-arb / python -m entropy_arb
 entropy_arb/__main__.py  python -m entropy_arb 启动器
 entropy_arb/config.py    YAML + .env 配置契约与校验
 entropy_arb/book.py      订单簿 + 含手续费的套利规模计算
-entropy_arb/feeds.py     官方 HL ws + zkLighter ws + Aster ws 行情
+entropy_arb/feeds.py     官方 HL ws + zkLighter ws + Aster ws + Polymarket ws 行情
 entropy_arb/venue_hl.py  Hyperliquid dex 适配器（Entropy、tradexyz）
 entropy_arb/venue_lighter.py  zkLighter 适配器（主网、Robinhood 链）
 entropy_arb/venue_aster.py    Aster DEX V3 适配器（EIP-712 签名 REST）
+entropy_arb/venue_polymarket.py  Polymarket Perps 适配器（proxy 钱包，msgpack+EIP-712 签名 REST）
 entropy_arb/engine.py    双交易所策略主循环
 entropy_arb/dashboard.py Rich 终端仪表盘
 entropy_arb/recorder.py  分钟级盘口数据采集

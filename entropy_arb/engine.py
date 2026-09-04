@@ -32,6 +32,7 @@ from .recorder import MinuteRecorder
 from .venue_aster import AsterVenue
 from .venue_hl import HLVenue
 from .venue_lighter import LighterVenue
+from .venue_polymarket import PolymarketVenue
 
 log = logging.getLogger("engine")
 
@@ -138,6 +139,8 @@ class Engine:
             return LighterVenue(vc, self.session, self.cfg.settle_timeout_sec)
         if vc.kind == "aster":
             return AsterVenue(vc, self.session, self.cfg.settle_timeout_sec)
+        if vc.kind == "polymarket":
+            return PolymarketVenue(vc, self.session, self.cfg.settle_timeout_sec)
         return HLVenue(vc, self.cfg.hl_api_url, self.cfg.hl_ws_url,
                        self.session, self.cfg.settle_timeout_sec)
 

@@ -3,7 +3,7 @@
 **[中文文档 / Chinese documentation → README.zh-CN.md](README.zh-CN.md)**
 
 Open-source two-venue perp arbitrage bot. Both legs are configurable — either
-can be any of the five supported venues (the two legs must differ); the
+can be any of the six supported venues (the two legs must differ); the
 **base** leg is the premium's numerator, the **hedge** leg its denominator
 (`base_venue` defaults to `entropy`):
 
@@ -14,6 +14,7 @@ can be any of the five supported venues (the two legs must differ); the
 | `lighter-rh` | Lighter Robinhood chain | **USDG** | 0 bps | zkLighter ws |
 | `tradexyz` | Hyperliquid trade.xyz dex | USDC | ~1 bps | HL l2Book, sync IOC settle |
 | `aster` | Aster DEX V3 perps | USDT | ~4.5 bps | Aster fapi ws (top-20 snapshots), sync IOC settle |
+| `polymarket` | Polymarket Perps | pUSD | ~4 bps | Polymarket perps ws (100 ms full-book snapshots), IOC + REST poll settle |
 
 > **Referral links** — signing up through these supports this project:
 > - Entropy — Tier 4 referral, 100% rebates: <https://entropy.io/?r=yourquantguy>
@@ -83,7 +84,8 @@ cp .env.example .env                     # credentials — required to trade
 
 The markets live in `config.yaml`: `symbol` (traded on both venues),
 `base_venue` and `hedge_venue` (each one of `entropy`, `lighter`,
-`lighter-rh`, `tradexyz`; the two legs must differ; `base_venue` defaults to
+`lighter-rh`, `tradexyz`, `aster`, `polymarket`; the two legs must differ;
+`base_venue` defaults to
 `entropy`). The `--symbol` / `--base` / `--hedge` flags override them for a
 single run.
 
@@ -282,7 +284,7 @@ startup errors), credentials in `.env`. Full commented reference:
 | key | meaning | default |
 |---|---|---|
 | `symbol` | market traded on both legs | — |
-| `base_venue` | the base leg (premium numerator): `entropy` / `lighter` / `lighter-rh` / `tradexyz` | `entropy` |
+| `base_venue` | the base leg (premium numerator): `entropy` / `lighter` / `lighter-rh` / `tradexyz` / `aster` / `polymarket` | `entropy` |
 | `hedge_venue` | the hedge leg (premium denominator): any venue ≠ `base_venue` | — |
 | `thresholds.midline_bps` | premium center for THIS pair (measure it!) | — |
 | `thresholds.upper_bps` / `lower_bps` | entry bands (> 0) | — |
@@ -318,6 +320,14 @@ its own block.
   `LIGHTER_HEDGE_ACCOUNT_INDEX` / `LIGHTER_HEDGE_API_KEY_INDEX` /
   `LIGHTER_HEDGE_API_PRIVATE_KEY` instead (no fallback — the deployments
   have separate accounts).
+- **polymarket** — run `python tools/polymarket_make_proxy.py
+  --owner-key 0x...` once: it generates a fresh PROXY keypair and has
+  your OWNER wallet EIP-712-sign the createProxy ceremony. It prints
+  `POLYMARKET_PROXY_ADDRESS` / `POLYMARKET_PROXY_PRIVATE_KEY` /
+  `POLYMARKET_PROXY_SECRET` for `.env`. The credential expires after
+  ~1 week — re-run the script and replace all three together (an
+  operational cadence to plan for). Trading signs with the PROXY key,
+  never the owner key.
 - **aster** — create a Pro API wallet at
   <https://www.asterdex.com/en/api-wallet> (switch to "Pro API" at the top).
   `ASTER_PRIVATE_KEY` is the **API (agent) wallet's** key;
@@ -354,10 +364,11 @@ entropy_arb/cli.py       CLI entry — entropy-arb / python -m entropy_arb
 entropy_arb/__main__.py  python -m entropy_arb launcher
 entropy_arb/config.py    YAML + .env contract, validation
 entropy_arb/book.py      order books + fee-aware crossing/sizing math
-entropy_arb/feeds.py     official HL ws + zkLighter ws + Aster ws book feeds
+entropy_arb/feeds.py     official HL ws + zkLighter ws + Aster ws + Polymarket ws book feeds
 entropy_arb/venue_hl.py  Hyperliquid dex adapter (Entropy, tradexyz)
 entropy_arb/venue_lighter.py  zkLighter adapter (mainnet, Robinhood chain)
 entropy_arb/venue_aster.py    Aster DEX V3 adapter (EIP-712 signed REST)
+entropy_arb/venue_polymarket.py  Polymarket Perps adapter (proxy-wallet, msgpack+EIP-712 signed REST)
 entropy_arb/engine.py    the two-venue strategy loop
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars

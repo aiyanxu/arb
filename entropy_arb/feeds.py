@@ -12,6 +12,10 @@ AsterBookFeed: Aster fapi websocket (wss://fstream.asterdex.com) depth20
     channel — every frame is an authoritative full top-20 snapshot, guarded
     only by update-id monotonicity. No subscribe message (raw stream) and no
     app-level ping (the server sends protocol pings, auto-answered).
+PolymarketBookFeed: Polymarket perps websocket book::<instrument_id> channel
+    — full-depth snapshots every 100ms (same ["px","sz"] pair shape as Aster,
+    so the book reuses apply_aster), guarded by sequence monotonicity, with an
+    app-level ping every 25s (the server drops idle connections after 60s).
 
 Both touch the book on any inbound frame (connection-based freshness: a quiet
 market is not stale, only a dead feed is) and reconnect with backoff.
@@ -185,6 +189,94 @@ class AsterBookFeed:
             except Exception as e:
                 log.warning("[%s] ws error: %s — reconnect in %.0fs",
                             self.name, e, backoff)
+            self.book.ready = False
+            self.notify()
+            if stop.is_set():
+                break
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+
+class PolymarketBookFeed:
+    """Polymarket perps book consumer for one instrument (e.g. iid 6 = BTC-USD).
+
+    Every book:: frame is a full snapshot (pushed every 100ms), so a missed
+    frame is corrected by the next one — no gap recovery, only a monotonic
+    sequence guard against stale/replayed frames. The ["px","sz"] pair shape
+    is identical to Aster's, hence the reuse of OrderBook.apply_aster."""
+
+    def __init__(self, name: str, ws_url: str, iid: int, book: OrderBook,
+                 notify: Callable[[], None], ping_sec: float = 25.0) -> None:
+        self.name = name
+        self.ws_url = ws_url
+        self.iid = iid
+        self.book = book
+        self.notify = notify
+        self.ping_sec = ping_sec     # server drops idle connections after 60s
+        self._last_sq: Optional[int] = None
+        self._snapped = False
+
+    def _on_frame(self, msg: dict) -> None:
+        self.book.touch()
+        ch = msg.get("ch")
+        if not isinstance(ch, str) or ch != f"book::{self.iid}":
+            return                    # sub-acks, pongs, other channels
+        sq = msg.get("sq")
+        if not isinstance(sq, int):
+            return
+        if self._last_sq is not None and sq <= self._last_sq:
+            return                    # stale/replayed frame — drop
+        self._last_sq = sq
+        data = msg.get("data") or {}
+        self.book.apply_aster(data.get("b") or [], data.get("a") or [])
+        if not self._snapped:
+            self._snapped = True
+            log.info("[%s] snapshot: %d bids / %d asks", self.name,
+                     len(self.book.bids), len(self.book.asks))
+        self.notify()
+
+    async def _pinger(self, ws) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self.ping_sec)
+                await ws.send(json.dumps({"req": "post",
+                                          "op": {"type": "ping"}}))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    async def run(self, stop: asyncio.Event) -> None:
+        backoff = 1.0
+        while not stop.is_set():
+            ptask = None
+            try:
+                async with ws_connect(self.ws_url, max_size=2**23,
+                                      open_timeout=10, ping_interval=15,
+                                      ping_timeout=15, proxy=None) as ws:
+                    log.info("[%s] connected (%s)", self.name, self.ws_url)
+                    self.book.clear()
+                    self._last_sq = None
+                    self._snapped = False
+                    await ws.send(json.dumps({
+                        "id": 1, "req": "sub", "chs": [f"book::{self.iid}"]}))
+                    ptask = asyncio.create_task(self._pinger(ws))
+                    async for raw in ws:
+                        backoff = 1.0
+                        self._on_frame(json.loads(raw))
+                        if stop.is_set():
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("[%s] ws error: %s — reconnect in %.0fs",
+                            self.name, e, backoff)
+            finally:
+                if ptask is not None:
+                    ptask.cancel()
             self.book.ready = False
             self.notify()
             if stop.is_set():

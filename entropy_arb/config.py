@@ -36,10 +36,12 @@ HL_API_URL = "https://api.hyperliquid.xyz"
 HL_WS_URL = "wss://api.hyperliquid.xyz/ws"   # official ws — the only HL feed used
 ASTER_API_URL = "https://fapi.asterdex.com"  # V3 futures API
 ASTER_WS_URL = "wss://fstream.asterdex.com"
+POLYMARKET_API_URL = "https://api.perpetuals.polymarket.com"  # perps gateway
+POLYMARKET_WS_URL = "wss://ws.perpetuals.polymarket.com/v1/ws"
 
 # Any venue can be either leg (base or hedge); the two legs must differ.
 # 任意 venue 均可作为 base 或 hedge 腿，但两条腿不能相同。
-VENUES = ("entropy", "lighter", "lighter-rh", "tradexyz", "aster")
+VENUES = ("entropy", "lighter", "lighter-rh", "tradexyz", "aster", "polymarket")
 DEFAULT_BASE_VENUE = "entropy"
 
 
@@ -67,7 +69,7 @@ LIGHTER_PROFILES: Dict[str, LighterProfile] = {
 @dataclass(frozen=True)
 class VenueSpec:
     """Static per-venue facts (either leg is built from these + the yaml)."""
-    kind: str                     # "hl" | "lighter" | "aster"
+    kind: str                     # "hl" | "lighter" | "aster" | "polymarket"
     label: str                    # display name: "ENTROPY" | "XYZ" | ...
     hl_dex: str                   # default dex for hl venues ("" for lighter)
     fee_bps: float                # venue taker fee default
@@ -85,6 +87,7 @@ VENUE_REGISTRY: Dict[str, VenueSpec] = {
     "lighter-rh": VenueSpec("lighter", "RH", "", 0.0, 30,
                             LIGHTER_PROFILES["lighter-rh"]),
     "aster": VenueSpec("aster", "ASTER", "", 4.5, 120),
+    "polymarket": VenueSpec("polymarket", "POLY", "", 4.0, 120),
 }
 
 
@@ -122,6 +125,19 @@ class AsterCreds:
 
 
 @dataclass
+class PolymarketCreds:
+    proxy_address: Optional[str]      # proxy wallet address (the polymarket-proxy
+                                      # header; separate keypair from the owner)
+    proxy_secret: Optional[str]       # from the one-time createProxy ceremony
+    private_key: Optional[str]        # proxy wallet key — signs every op
+
+    @property
+    def complete(self) -> bool:
+        return (bool(self.proxy_address) and bool(self.proxy_secret)
+                and bool(self.private_key))
+
+
+@dataclass
 class VenueConf:
     key: str                  # "base" | "hedge"
     kind: str                 # "hl" | "lighter" | "aster"
@@ -138,6 +154,8 @@ class VenueConf:
     lighter_creds: Optional[LighterCreds] = None
     # aster
     aster_creds: Optional[AsterCreds] = None
+    # polymarket
+    polymarket_creds: Optional[PolymarketCreds] = None
 
 
 @dataclass
@@ -194,6 +212,9 @@ class Config:
                 return False
             if v.kind == "aster" and not (v.aster_creds
                                           and v.aster_creds.complete):
+                return False
+            if v.kind == "polymarket" and not (v.polymarket_creds
+                                               and v.polymarket_creds.complete):
                 return False
         return True
 
@@ -361,9 +382,10 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str,
     if "dex" in sec and spec.kind != "hl":
         raise ConfigError(
             f"'{role}.dex' only applies to Hyperliquid venues — {venue!r} is "
-            f"a Lighter deployment or Aster / dex 仅适用于 Hyperliquid 交易所")
+            f"a Lighter deployment, Aster or Polymarket / dex 仅适用于 "
+            f"Hyperliquid 交易所")
     fee = float(sec.get("taker_fee_bps", spec.fee_bps))
-    if spec.kind in ("hl", "aster") and fee < spec.fee_bps:
+    if spec.kind in ("hl", "aster", "polymarket") and fee < spec.fee_bps:
         # underestimating a venue's fee makes every threshold systematically
         # too loose — never let it pass silently
         raise ConfigError(
@@ -398,6 +420,18 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str,
         return VenueConf(key=role, kind="aster", label=spec.label,
                          symbol=symbol, fee_bps=fee, cap_usd=cap,
                          orders_per_min=orders, aster_creds=creds)
+
+    if spec.kind == "polymarket":
+        # proxy credential from the one-time createProxy ceremony (see
+        # tools/polymarket_make_proxy.py); expires after ~1 week — re-run the
+        # ceremony and update all three values together. Occupies at most one
+        # leg, so no hedge-variant env block.
+        creds = PolymarketCreds(_env_s("POLYMARKET_PROXY_ADDRESS"),
+                                _env_s("POLYMARKET_PROXY_SECRET"),
+                                _env_s("POLYMARKET_PROXY_PRIVATE_KEY"))
+        return VenueConf(key=role, kind="polymarket", label=spec.label,
+                         symbol=symbol, fee_bps=fee, cap_usd=cap,
+                         orders_per_min=orders, polymarket_creds=creds)
 
     if venue == "tradexyz":
         hc = HLCreds(_env_s("HL_PRIVATE_KEY_XYZ") or _env_s("HL_PRIVATE_KEY"),

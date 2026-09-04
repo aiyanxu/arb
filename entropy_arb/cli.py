@@ -15,7 +15,8 @@
 The markets you trade live in config.yaml (symbol:, base_venue:,
 hedge_venue:); --symbol, --base and --hedge are optional per-run overrides
 that win over the file. Either leg may be any of entropy / lighter /
-lighter-rh / tradexyz / aster (the two legs must differ; base_venue defaults
+lighter-rh / tradexyz / aster / polymarket (the two legs must differ;
+base_venue defaults
 to entropy). Venue-native symbol names can differ (e.g. trade.xyz lists SNDK
 as TTSLA) — put those in symbol_map.yaml, loaded automatically when the
 file exists. Add --cn for a Chinese-language dashboard. There is no paper
@@ -87,7 +88,8 @@ async def amain(cfg, record_only: bool, use_dashboard: bool, force_tty: bool,
 def main() -> None:
     p = argparse.ArgumentParser(
         description="Two-venue LIVE arbitrage: any of entropy / lighter / "
-                    "lighter-rh / tradexyz / aster as base, any other as "
+                    "lighter-rh / tradexyz / aster / polymarket as base, "
+                    "any other as "
                     "hedge. Without --record-only, real orders are sent.")
     p.add_argument("--symbol", default=None,
                    help="override the symbol from config.yaml, e.g. SNDK / "

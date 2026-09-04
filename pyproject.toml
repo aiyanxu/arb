@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entropy-arb"
-description = "Two-venue perp arbitrage bot — Entropy vs Lighter mainnet / Lighter Robinhood / trade.xyz / Aster"
+description = "Two-venue perp arbitrage bot — Entropy vs Lighter mainnet / Lighter Robinhood / trade.xyz / Aster / Polymarket Perps"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "yourQuantGuy" }]
-keywords = ["arbitrage", "hyperliquid", "lighter", "aster", "perpetual", "trading"]
+keywords = ["arbitrage", "hyperliquid", "lighter", "aster", "polymarket", "perpetual", "trading"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -31,6 +31,8 @@ live = [
     # transaction signing SDKs — needed only to trade; record-only works without them
     "hyperliquid-python-sdk>=0.9",
     "eth-account>=0.10",
+    # Polymarket perps op signing: msgpack-encodes the compact op before keccak
+    "msgpack>=1.0",
     # Lighter signing. Installs from the SDK's current main; for reproducible
     # deploys pin a commit: ...lighter-python.git@<commit-sha>
     "lighter-sdk @ git+https://github.com/elliottech/lighter-python.git",

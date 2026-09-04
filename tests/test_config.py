@@ -357,6 +357,80 @@ def test_symbol_map_aster():
     assert cfg.base.symbol == "BTC"
 
 
+# ------------------------------------------------------------ polymarket
+
+def test_polymarket_registry():
+    from entropy_arb.config import VENUES, VENUE_REGISTRY
+    assert "polymarket" in VENUES
+    spec = VENUE_REGISTRY["polymarket"]
+    assert spec.kind == "polymarket" and spec.label == "POLY"
+    assert spec.fee_bps == 4.0 and spec.hl_dex == ""
+    assert spec.orders_per_min == 120
+
+
+def test_polymarket_hedge():
+    cfg = load(MINIMAL, hedge="polymarket")
+    assert cfg.hedge.kind == "polymarket" and cfg.hedge.label == "POLY"
+    assert cfg.hedge.fee_bps == 4.0
+    assert cfg.hedge.polymarket_creds is not None
+    assert not cfg.hedge.polymarket_creds.complete  # NO_ENV has no credentials
+    assert not cfg.creds_complete
+    assert (cfg.hedge.lighter_profile is None and cfg.hedge.hl_creds is None
+            and cfg.hedge.aster_creds is None)
+
+
+def test_polymarket_base():
+    cfg = load(MINIMAL, base="polymarket", hedge="entropy")
+    assert cfg.base.kind == "polymarket" and cfg.base.key == "base"
+    assert cfg.hedge.kind == "hl" and cfg.hedge.hl_dex == "io"
+
+
+def test_polymarket_env_creds_complete():
+    env = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+    env.write("HL_PRIVATE_KEY=0xhl\n"
+              "POLYMARKET_PROXY_ADDRESS=0xabc\n"
+              "POLYMARKET_PROXY_SECRET=s3cret\n"
+              "POLYMARKET_PROXY_PRIVATE_KEY=0xdef\n")
+    env.close()
+    try:
+        cfg = load_config(write_tmp(MINIMAL), env.name,
+                          symbol="BTC", base_venue="entropy",
+                          hedge_venue="polymarket", symbol_map_file=NO_MAP)
+        assert cfg.hedge.polymarket_creds.proxy_address == "0xabc"
+        assert cfg.hedge.polymarket_creds.proxy_secret == "s3cret"
+        assert cfg.hedge.polymarket_creds.private_key == "0xdef"
+        assert cfg.hedge.polymarket_creds.complete
+        assert cfg.creds_complete
+    finally:
+        os.unlink(env.name)
+
+
+def test_polymarket_fee_below_default_rejected():
+    expect_error(MINIMAL + "\nhedge:\n  taker_fee_bps: 1.0\n",
+                 "below the venue default", hedge="polymarket")
+    expect_error(MINIMAL + "\nbase:\n  taker_fee_bps: 0.0\n",
+                 "below the venue default", base="polymarket",
+                 hedge="entropy")
+
+
+def test_polymarket_fee_at_or_above_default_ok():
+    cfg = load(MINIMAL + "\nhedge:\n  taker_fee_bps: 5.0\n",
+               hedge="polymarket")
+    assert cfg.hedge.fee_bps == 5.0
+
+
+def test_dex_on_polymarket_rejected():
+    expect_error(MINIMAL + "\nhedge:\n  dex: io\n",
+                 "only applies to Hyperliquid", hedge="polymarket")
+
+
+def test_symbol_map_polymarket():
+    cfg = load(MINIMAL, symbol="BTC", hedge="polymarket",
+               map_text="BTC:\n  polymarket: BTC-USD\n")
+    assert cfg.hedge.symbol == "BTC-USD"
+    assert cfg.base.symbol == "BTC"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
