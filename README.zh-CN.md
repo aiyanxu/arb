@@ -289,13 +289,13 @@ FROM read_csv('logs/minutes.csv');
   （内部自动共享 nonce 序列）；如需分开，设置
   `HL_PRIVATE_KEY_XYZ` / `HL_ACCOUNT_ADDRESS_XYZ`。注意给所交易的各 dex
   分别充入保证金。
-- **lighter / lighter-rh** —— `LIGHTER_ACCOUNT_INDEX`、`LIGHTER_API_KEY_INDEX`、
-  `LIGHTER_API_PRIVATE_KEY`，必须注册在与该腿配置**相同的部署**上
-  （主网与 Robinhood 链是两套独立的账户和密钥——参见
+- **lighter**（主网）—— `LIGHTER_ACCOUNT_INDEX`、`LIGHTER_API_KEY_INDEX`、
+  `LIGHTER_API_PRIVATE_KEY`。
+- **lighter-rh**（Robinhood 链）—— `LIGHTER_RH_ACCOUNT_INDEX`、
+  `LIGHTER_RH_API_KEY_INDEX`、`LIGHTER_RH_API_PRIVATE_KEY`。
+  主网与 Robinhood 链是两套独立账户和密钥（参见
   [lighter-python](https://github.com/elliottech/lighter-python)）。
-  当**两条腿**都是 Lighter 部署时，hedge 腿改读
-  `LIGHTER_HEDGE_ACCOUNT_INDEX` / `LIGHTER_HEDGE_API_KEY_INDEX` /
-  `LIGHTER_HEDGE_API_PRIVATE_KEY`（无回退——两个部署账户独立）。
+  二者可自由作为 base 或 hedge 腿——各读各自 venue 的区块。
 - **polymarket** —— 运行一次 `python tools/polymarket_make_proxy.py
   --owner-key 0x...`：脚本会新建 PROXY 钱包并用 OWNER 钱包完成 EIP-712
   createProxy 签名，打印 `POLYMARKET_PROXY_ADDRESS` /

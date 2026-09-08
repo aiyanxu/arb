@@ -312,14 +312,13 @@ its own block.
   account by default (one nonce sequence is handled internally); set
   `HL_PRIVATE_KEY_XYZ` / `HL_ACCOUNT_ADDRESS_XYZ` to split them. Fund the
   dex-specific clearinghouses you trade.
-- **lighter / lighter-rh** — `LIGHTER_ACCOUNT_INDEX`, `LIGHTER_API_KEY_INDEX`,
-  `LIGHTER_API_PRIVATE_KEY`, registered on the **same deployment** as the
-  Lighter leg (mainnet and the Robinhood chain are separate accounts and
-  keys — see [lighter-python](https://github.com/elliottech/lighter-python)).
-  When **both** legs are Lighter deployments, the hedge leg reads
-  `LIGHTER_HEDGE_ACCOUNT_INDEX` / `LIGHTER_HEDGE_API_KEY_INDEX` /
-  `LIGHTER_HEDGE_API_PRIVATE_KEY` instead (no fallback — the deployments
-  have separate accounts).
+- **lighter** (mainnet) — `LIGHTER_ACCOUNT_INDEX`, `LIGHTER_API_KEY_INDEX`,
+  `LIGHTER_API_PRIVATE_KEY`.
+- **lighter-rh** (Robinhood chain) — `LIGHTER_RH_ACCOUNT_INDEX`,
+  `LIGHTER_RH_API_KEY_INDEX`, `LIGHTER_RH_API_PRIVATE_KEY`.
+  Mainnet and the Robinhood chain are separate accounts and separate keys
+  (see [lighter-python](https://github.com/elliottech/lighter-python)).
+  Either may be base or hedge — each reads its own block by venue name.
 - **polymarket** — run `python tools/polymarket_make_proxy.py
   --owner-key 0x...` once: it generates a fresh PROXY keypair and has
   your OWNER wallet EIP-712-sign the createProxy ceremony. It prints

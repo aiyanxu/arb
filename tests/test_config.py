@@ -102,12 +102,37 @@ def test_hedge_venue_entropy():
     assert cfg.base.key == "base"
 
 
-def test_both_lighter_legs():
-    # lighter base + lighter-rh hedge: separate deployments, separate creds
-    cfg = load(MINIMAL, base="lighter", hedge="lighter-rh")
-    assert cfg.base.lighter_profile.chain_id == 304
-    assert cfg.hedge.lighter_profile.chain_id == 466324
-    assert cfg.base.lighter_creds is not cfg.hedge.lighter_creds
+def test_lighter_env_creds_keyed_by_venue():
+    env = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+    env.write("LIGHTER_ACCOUNT_INDEX=1\nLIGHTER_API_KEY_INDEX=2\n"
+              "LIGHTER_API_PRIVATE_KEY=0xmain\n"
+              "LIGHTER_RH_ACCOUNT_INDEX=11\nLIGHTER_RH_API_KEY_INDEX=22\n"
+              "LIGHTER_RH_API_PRIVATE_KEY=0xrh\n")
+    env.close()
+    try:
+        cfg = load_config(write_tmp(MINIMAL), env.name, symbol="SNDK",
+                          base_venue="lighter", hedge_venue="lighter-rh",
+                          symbol_map_file=NO_MAP)
+        assert cfg.base.lighter_creds.account_index == 1
+        assert cfg.base.lighter_creds.api_private_key == "0xmain"
+        assert cfg.hedge.lighter_creds.account_index == 11
+        assert cfg.hedge.lighter_creds.api_private_key == "0xrh"
+        # reversed roles: lighter-rh base + lighter hedge — each still reads
+        # its OWN venue block (the old role-keyed scheme got this wrong)
+        cfg = load_config(write_tmp(MINIMAL), env.name, symbol="SNDK",
+                          base_venue="lighter-rh", hedge_venue="lighter",
+                          symbol_map_file=NO_MAP)
+        assert cfg.base.lighter_creds.account_index == 11
+        assert cfg.base.lighter_creds.api_private_key == "0xrh"
+        assert cfg.hedge.lighter_creds.account_index == 1
+        assert cfg.hedge.lighter_creds.api_private_key == "0xmain"
+        assert cfg.creds_complete
+    finally:
+        os.unlink(env.name)
+        for k in ("LIGHTER_ACCOUNT_INDEX", "LIGHTER_API_KEY_INDEX",
+                  "LIGHTER_API_PRIVATE_KEY", "LIGHTER_RH_ACCOUNT_INDEX",
+                  "LIGHTER_RH_API_KEY_INDEX", "LIGHTER_RH_API_PRIVATE_KEY"):
+            os.environ.pop(k, None)
 
 
 def expect_error(yaml_text: str, needle: str, **kw):

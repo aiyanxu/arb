@@ -367,15 +367,13 @@ def _env_i(name: str) -> Optional[int]:
     return int(v) if v not in (None, "") else None
 
 
-def _make_leg(role: str, venue: str, raw: dict, symbol: str,
-              both_lighter: bool) -> VenueConf:
+def _make_leg(role: str, venue: str, raw: dict, symbol: str) -> VenueConf:
     """Build one leg (base or hedge) from the venue registry + yaml section.
 
     Credentials are keyed by VENUE, not by role: entropy reads HL_*, tradexyz
     reads HL_*_XYZ (falling back to HL_* — one Hyperliquid account may trade
-    both dexes), a Lighter deployment reads LIGHTER_*. When BOTH legs are
-    Lighter deployments the hedge leg reads LIGHTER_HEDGE_* with NO fallback
-    (falling back would silently point both legs at one account index).
+    both dexes), `lighter` reads LIGHTER_*, `lighter-rh` reads LIGHTER_RH_*.
+    Either Lighter deployment may be base or hedge; each reads its own block.
     """
     spec = VENUE_REGISTRY[venue]
     sec = raw.get(role) or {}
@@ -397,14 +395,10 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str,
     orders = int(sec.get("max_orders_per_min", spec.orders_per_min))
 
     if spec.kind == "lighter":
-        if both_lighter and role == "hedge":
-            creds = LighterCreds(_env_i("LIGHTER_HEDGE_ACCOUNT_INDEX"),
-                                 _env_i("LIGHTER_HEDGE_API_KEY_INDEX"),
-                                 _env_s("LIGHTER_HEDGE_API_PRIVATE_KEY"))
-        else:
-            creds = LighterCreds(_env_i("LIGHTER_ACCOUNT_INDEX"),
-                                 _env_i("LIGHTER_API_KEY_INDEX"),
-                                 _env_s("LIGHTER_API_PRIVATE_KEY"))
+        prefix = "LIGHTER_RH_" if venue == "lighter-rh" else "LIGHTER_"
+        creds = LighterCreds(_env_i(prefix + "ACCOUNT_INDEX"),
+                             _env_i(prefix + "API_KEY_INDEX"),
+                             _env_s(prefix + "API_PRIVATE_KEY"))
         return VenueConf(key=role, kind="lighter", label=spec.label,
                          symbol=symbol, fee_bps=fee, cap_usd=cap,
                          orders_per_min=orders,
@@ -413,8 +407,8 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str,
 
     if spec.kind == "aster":
         # aster can occupy at most one leg (the two legs must differ), so
-        # there is no hedge-variant block like LIGHTER_HEDGE_* — no fallback
-        # either: the master wallet address cannot be derived from the key.
+        # there is no hedge-variant env block — no fallback either: the
+        # master wallet address cannot be derived from the key.
         creds = AsterCreds(_env_s("ASTER_PRIVATE_KEY"),
                            _env_s("ASTER_ACCOUNT_ADDRESS"))
         return VenueConf(key=role, kind="aster", label=spec.label,
@@ -521,10 +515,8 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
                           "more than the profitable depth loses money on the "
                           "tail / 必须在 (0, 1] 之间")
 
-    both_lighter = (VENUE_REGISTRY[base_venue].kind == "lighter"
-                    and VENUE_REGISTRY[hedge_venue].kind == "lighter")
-    base = _make_leg("base", base_venue, raw, base_symbol, both_lighter)
-    hedge = _make_leg("hedge", hedge_venue, raw, hedge_symbol, both_lighter)
+    base = _make_leg("base", base_venue, raw, base_symbol)
+    hedge = _make_leg("hedge", hedge_venue, raw, hedge_symbol)
     if (base.kind == "hl" and hedge.kind == "hl"
             and base.hl_dex == hedge.hl_dex):
         raise ConfigError(

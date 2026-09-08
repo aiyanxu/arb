@@ -1,2 +1,2 @@
 # 需求
-cli 工具支持通过参数--config 传递 config 文件路径, 并根据 config 文件内容进行配置和运行
+lighter 和 lighter-rh 在 .env中可以配置各自的key, lighter 和 lighter-rh 也可以自由作为base 或者hedge
