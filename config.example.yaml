@@ -112,6 +112,24 @@ recorder:
   enabled: true
   db: logs/minutes.duckdb
 
+# ============ THRESHOLD DRIFT CHECK / 阈值漂移巡检（可选） ==================
+# Every interval_sec the recorded minute data is re-analyzed (the same
+# math as `entropy-arb analyze`: median -> midline, p90 of the fee-adjusted
+# executable room -> upper/lower). When any of the three numbers differs
+# from config.yaml's value by more than `tolerance` (0.10 = 10%), a
+# Telegram notification is sent (needs TELEGRAM_* in .env — see
+# entropy_arb/notify). Notifications only — nothing is auto-updated.
+# 每 interval_sec 用采集的分钟数据按 analyze 的方法重新推导 thresholds，
+# 任一值与 config.yaml 的偏差超过 tolerance 时发送 Telegram 通知（需在
+# .env 配置 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID）。只通知，不自动改配置。
+threshold_check:
+  enabled: true
+  interval_sec: 1800.0     # check every half hour / 每半小时检查一次
+  hours: 0.0               # data window (0 = all) / 数据窗口（0 = 全部）
+  min_samples: 10          # ignore minutes with fewer fresh samples / 剔除稀疏分钟
+  min_minutes: 240         # need at least this much data to judge / 最少数据量
+  tolerance: 0.10          # >10% relative drift fires the notification / 相对偏差阈值
+
 # ==================== LOGGING & DASHBOARD / 日志与仪表盘 ====================
 # On a terminal the bot shows a live Rich dashboard (books, signal, positions,
 # PnL, recent executions); log lines then go to `file` instead of the console.

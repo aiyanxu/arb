@@ -146,6 +146,13 @@ notify.send("base +2 -> 0, hedge -1.5 -> 0 — 两腿已清零")
 单聊限制），绝不阻塞交易、绝不抛异常。何时调用 `send()`（成交、HALT、
 日报等）由你的代码决定。
 
+**阈值漂移巡检。** `threshold_check.enabled: true` 后，引擎每
+`interval_sec`（默认 30 分钟）用采集的分钟数据按 `entropy-arb analyze`
+的方法重新推导 thresholds（中位数→midline，费后可成交空间的 p90→
+upper/lower），任一值与 config.yaml 的偏差超过 `tolerance`（默认 10%）即
+通过 `notify.send()` 发送 Telegram 通知。仅通知，不自动修改配置；数据不足
+时静默跳过。
+
 ## Docker 部署
 
 镜像内不含任何密钥与配置——`config.yaml`、`symbol_map.yaml`、`.env` 都在
@@ -365,6 +372,7 @@ entropy_arb/venue_polymarket.py  Polymarket Perps 适配器（proxy 钱包，msg
 entropy_arb/engine.py    双交易所策略主循环 + 共享 venue 工厂
 entropy_arb/flatten.py   一键清仓（`entropy-arb flatten`）
 entropy_arb/notify.py    Telegram 发送 API — 在需要处调用 notify.send()
+entropy_arb/threshold_check.py  定时阈值漂移巡检（数据 vs config.yaml）
 entropy_arb/dashboard.py Rich 终端仪表盘
 entropy_arb/recorder.py  分钟级盘口数据采集
 entropy_arb/analyze.py    分析器核心 — 亦即 `entropy-arb analyze` / tools/analyze.py

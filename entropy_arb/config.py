@@ -198,6 +198,8 @@ class Config:
     trades_csv: str
     dashboard: bool
     log_file: str
+    # scheduled threshold-drift check (dict: interval_sec/tolerance/...)
+    threshold_check: dict
     # runtime
     hl_api_url: str = HL_API_URL
     hl_ws_url: str = HL_WS_URL
@@ -217,6 +219,34 @@ class Config:
                                                and v.polymarket_creds.complete):
                 return False
         return True
+
+    # -------------------------------------------------- threshold_check opts
+
+    @property
+    def threshold_check_enabled(self) -> bool:
+        return bool((self.threshold_check or {}).get("enabled", False))
+
+    @property
+    def threshold_check_interval_sec(self) -> float:
+        # the requirement's default cadence: every half hour
+        return float((self.threshold_check or {}).get("interval_sec", 1800.0))
+
+    @property
+    def threshold_check_hours(self) -> float:
+        # 0 = all recorded data, like analyze's --hours default
+        return float((self.threshold_check or {}).get("hours", 0.0))
+
+    @property
+    def threshold_check_min_samples(self) -> int:
+        return int((self.threshold_check or {}).get("min_samples", 10))
+
+    @property
+    def threshold_check_min_minutes(self) -> int:
+        return int((self.threshold_check or {}).get("min_minutes", 240))
+
+    @property
+    def threshold_check_tolerance(self) -> float:
+        return float((self.threshold_check or {}).get("tolerance", 0.10))
 
 
 # ----------------------------------------------------------------- YAML layer
@@ -278,6 +308,16 @@ _SCHEMA: Dict[str, Any] = {
         "trades_csv": str,
         "dashboard": bool,
         "file": str,
+    },
+    # periodic re-derivation of thresholds from recorded minute data; a
+    # drift beyond tolerance fires a telegram notification (entropy_arb.notify)
+    "threshold_check": {
+        "enabled": bool,
+        "interval_sec": float,
+        "hours": float,
+        "min_samples": int,
+        "min_minutes": int,
+        "tolerance": float,
     },
 }
 
@@ -556,4 +596,5 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         trades_csv=_get(raw, "logging", "trades_csv", "logs/trades.csv"),
         dashboard=bool(_get(raw, "logging", "dashboard", True)),
         log_file=_get(raw, "logging", "file", "logs/engine.log"),
+        threshold_check=dict(raw.get("threshold_check") or {}),
     )

@@ -233,6 +233,12 @@ class Engine:
             tasks.append(asyncio.create_task(self._http_keepalive_loop(),
                                              name="keepalive"))
         tasks.append(asyncio.create_task(self._status_loop(), name="status"))
+        if getattr(cfg, "threshold_check", None) and \
+                cfg.threshold_check.get("enabled"):
+            from .threshold_check import ThresholdDriftChecker
+            tasks.append(asyncio.create_task(
+                ThresholdDriftChecker(cfg).run(self.stop),
+                name="threshold-check"))
         if live:
             tasks.append(asyncio.create_task(self._reconcile_loop(),
                                              name="reconcile"))

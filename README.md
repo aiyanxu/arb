@@ -164,6 +164,13 @@ Setup: create a bot with @BotFather, put `TELEGRAM_BOT_TOKEN` and
 — notification failures cannot affect trading. `notify.drain()` waits for
 pending sends at shutdown. Where/when to call `send()` is up to you.
 
+One built-in caller: with `threshold_check.enabled: true` in `config.yaml`,
+a scheduled task re-derives the analyzer's suggested thresholds from the
+recorded minute data every `interval_sec` (default 30 min) and sends a
+Telegram notification when any of `midline_bps` / `upper_bps` / `lower_bps`
+drifts more than `tolerance` (10%) from the configured value — only a
+notification; config.yaml is never touched.
+
 ## Docker
 
 The image contains no secrets or config — `config.yaml`, `symbol_map.yaml`
@@ -400,6 +407,7 @@ entropy_arb/venue_polymarket.py  Polymarket Perps adapter (proxy-wallet, msgpack
 entropy_arb/engine.py    the two-venue strategy loop + shared venue factory
 entropy_arb/flatten.py   one-shot close of both legs (`entropy-arb flatten`)
 entropy_arb/notify.py    telegram send API — call notify.send() where wanted
+entropy_arb/threshold_check.py  scheduled config-vs-data threshold drift check
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars
 entropy_arb/analyze.py    analyzer core — also `entropy-arb analyze` / tools/analyze.py
