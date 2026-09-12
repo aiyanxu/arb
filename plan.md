@@ -1,2 +1,2 @@
 # 需求
-python3 tools/analyze.py 也加入cli中
+接入telegram 通知功能

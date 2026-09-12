@@ -70,13 +70,19 @@ def setup_logging(level: str, log_file: str | None = None,
 
 async def amain(cfg, record_only: bool, use_dashboard: bool, force_tty: bool,
                 log_buffer, lang: str) -> None:
+    from entropy_arb import notify
+    notifier = notify.attach(cfg)
     eng = Engine(cfg, record_only=record_only)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, eng.request_stop)
     if not use_dashboard:
-        await eng.run()
-        return
+        try:
+            await eng.run()
+            return
+        finally:
+            if notifier is not None:
+                notifier.flush_pending()
     from entropy_arb.dashboard import Dashboard
     dash = Dashboard(eng, log_buffer, cfg.log_file, force_terminal=force_tty,
                      lang=lang)
@@ -89,6 +95,8 @@ async def amain(cfg, record_only: bool, use_dashboard: bool, force_tty: bool,
             await asyncio.wait_for(dash_task, timeout=5)
         if not dash_task.done():
             dash_task.cancel()
+        if notifier is not None:
+            notifier.flush_pending()
 
 
 def analyze_entry(argv: list[str]) -> None:
@@ -124,11 +132,16 @@ def flatten_entry(args) -> None:
               "配置两个交易所的密钥", file=sys.stderr)
         sys.exit(2)
     setup_logging(cfg.log_level)
+    from entropy_arb import notify
+    notifier = notify.attach(cfg)
     try:
         asyncio.run(run_flatten(cfg))
     except (RuntimeError, ConfigError) as e:
         print(f"flatten failed: {e}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        if notifier is not None:
+            notifier.flush_pending()
 
 
 def main() -> None:
