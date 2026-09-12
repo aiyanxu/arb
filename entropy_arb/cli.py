@@ -12,6 +12,9 @@
     # LIVE trading: real orders, real money (needs .env credentials)
     entropy-arb
 
+    # analyze recorded minute data -> suggested thresholds (no config needed)
+    entropy-arb analyze [--db logs/minutes.duckdb] [--symbol SNDK] ...
+
 The markets you trade live in config.yaml (symbol:, base_venue:,
 hedge_venue:); --symbol, --base and --hedge are optional per-run overrides
 that win over the file. Either leg may be any of entropy / lighter /
@@ -21,7 +24,7 @@ to entropy). Venue-native symbol names can differ (e.g. trade.xyz lists SNDK
 as TTSLA) — put those in symbol_map.yaml, loaded automatically when the
 file exists. Add --cn for a Chinese-language dashboard. There is no paper
 mode. Collect data with --record-only, set your thresholds with
-tools/analyze.py, then go live with small position caps.
+`entropy-arb analyze`, then go live with small position caps.
 
 On a terminal the bot shows a live Rich dashboard (books, signal, positions,
 PnL, last executions) and writes log lines to logging.file; use
@@ -85,12 +88,28 @@ async def amain(cfg, record_only: bool, use_dashboard: bool, force_tty: bool,
             dash_task.cancel()
 
 
+def analyze_entry(argv: list[str]) -> None:
+    """`entropy-arb analyze [flags]` — the threshold analyzer.
+
+    Runs before any config/.env loading: the analyzer reads the recorder's
+    DuckDB only and needs neither config.yaml nor credentials.
+    """
+    from entropy_arb.analyze import main as analyze_main
+    analyze_main(argv)
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "analyze":
+        analyze_entry(sys.argv[2:])
+        return
+
     p = argparse.ArgumentParser(
         description="Two-venue LIVE arbitrage: any of entropy / lighter / "
                     "lighter-rh / tradexyz / aster / polymarket as base, "
                     "any other as "
-                    "hedge. Without --record-only, real orders are sent.")
+                    "hedge. Without --record-only, real orders are sent. "
+                    "Subcommand `analyze` (entropy-arb analyze) suggests "
+                    "thresholds from recorded data instead of trading.")
     p.add_argument("--symbol", default=None,
                    help="override the symbol from config.yaml, e.g. SNDK / "
                         "覆盖 config.yaml 中的交易品种")

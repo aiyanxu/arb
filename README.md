@@ -108,7 +108,7 @@ intraday regimes). It writes `logs/minutes.duckdb` (DuckDB, one table per
 **2. Analyze and set your thresholds:**
 
 ```bash
-python3 tools/analyze.py
+entropy-arb analyze                        # == python3 tools/analyze.py
 ```
 
 It prints the premium distribution, how often each candidate band would have
@@ -197,8 +197,8 @@ Notes:
 - Analyze recorded data inside the container:
 
 ```bash
-docker run --rm --entrypoint python -v ./logs:/app/logs \
-  entropy-arb:record-only tools/analyze.py
+docker run --rm --entrypoint entropy-arb -v ./logs:/app/logs \
+  entropy-arb:record-only analyze
 ```
 
 ## Data collection & analysis
@@ -371,7 +371,7 @@ entropy_arb/venue_polymarket.py  Polymarket Perps adapter (proxy-wallet, msgpack
 entropy_arb/engine.py    the two-venue strategy loop
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars
-tools/analyze.py         minutes.duckdb -> suggested thresholds (per combination)
+entropy_arb/analyze.py    analyzer core — also `entropy-arb analyze` / tools/analyze.py
 tests/                   python3 -m pytest tests/
 ```
 

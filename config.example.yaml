@@ -41,11 +41,12 @@ hedge_venue: lighter-rh
 # full round trip nets >= upper + lower bps after fees by construction.
 #
 # midline_bps is a number YOU derive from recorded data. Run the bot
-# (--record-only) to collect logs/minutes.duckdb, then:  python3 tools/analyze.py
+# (--record-only) to collect logs/minutes.duckdb, then:  entropy-arb analyze
 #
 # midline_bps 是你根据采集数据设定的值（仅适用于当前 base/hedge 组合——
 # 更换任一腿后需重新采集分析）。先运行机器人（--record-only）采集
-# logs/minutes.duckdb，再运行 python3 tools/analyze.py 获取建议值。
+# logs/minutes.duckdb，再运行 entropy-arb analyze（等价于
+# python3 tools/analyze.py）获取建议值。
 # 两个方向的门槛都已扣除手续费（引擎会在此之上另加手续费），因此一次完整往返
 # 扣费后净赚 >= upper + lower bps。
 thresholds:
@@ -104,9 +105,9 @@ execution:
 
 # ================== DATA RECORDER / 数据采集 ===============================
 # Always-on while the bot runs: samples both real order books 1/sec and
-# writes one CSV row per minute. This is the input for tools/analyze.py.
+# writes one CSV row per minute. This is the input for entropy-arb analyze.
 # 机器人运行期间自动开启：每秒采样两边真实盘口，每分钟写一行到 DuckDB
-# 数据库，供 tools/analyze.py 分析并设定上方 thresholds。
+# 数据库，供 entropy-arb analyze（tools/analyze.py）分析并设定上方 thresholds。
 recorder:
   enabled: true
   db: logs/minutes.duckdb

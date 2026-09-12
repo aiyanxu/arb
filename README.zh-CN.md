@@ -96,7 +96,7 @@ entropy-arb --record-only --symbol SNDK --base lighter --hedge entropy
 **第二步：分析数据、设定阈值：**
 
 ```bash
-python3 tools/analyze.py
+entropy-arb analyze                        # == python3 tools/analyze.py
 ```
 
 它会输出溢价分布、各档带宽的历史触发频率，以及可直接粘贴进
@@ -182,8 +182,8 @@ docker compose down                             # SIGTERM -> 优雅停机
 - 在容器内分析采集数据：
 
 ```bash
-docker run --rm --entrypoint python -v ./logs:/app/logs \
-  entropy-arb:record-only tools/analyze.py
+docker run --rm --entrypoint entropy-arb -v ./logs:/app/logs \
+  entropy-arb:record-only analyze
 ```
 
 ## 数据采集与分析
@@ -340,7 +340,7 @@ entropy_arb/venue_polymarket.py  Polymarket Perps 适配器（proxy 钱包，msg
 entropy_arb/engine.py    双交易所策略主循环
 entropy_arb/dashboard.py Rich 终端仪表盘
 entropy_arb/recorder.py  分钟级盘口数据采集
-tools/analyze.py         minutes.duckdb -> 阈值建议
+entropy_arb/analyze.py    分析器核心 — 亦即 `entropy-arb analyze` / tools/analyze.py
 tests/                   python3 -m pytest tests/
 ```
 

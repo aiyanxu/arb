@@ -1,4 +1,7 @@
-"""tools/analyze.py + tools/migrate_per_symbol.py: per-combination tables.
+"""tools/analyze.py + tools/migrate_per_symbol.py + `entropy-arb analyze`.
+
+The analyzer lives in entropy_arb.analyze (so the installed entry point
+serves it); tools/analyze.py is a compatibility wrapper over it.
 
 Run:  python3 -m pytest tests/  (or  python3 tests/test_tools.py)
 """
@@ -12,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import duckdb  # noqa: E402
 
+import entropy_arb.analyze as analyze  # noqa: E402
 from entropy_arb.recorder import create_table_sql, minute_table  # noqa: E402
 
 _TOOLS = os.path.join(os.path.dirname(__file__), "..", "tools")
@@ -26,7 +30,6 @@ def _load_tool(name):
     return mod
 
 
-analyze = _load_tool("analyze")
 migrate = _load_tool("migrate_per_symbol")
 
 # the pre-(base,hedge,symbol) 19-column shape, as a literal so building
@@ -182,42 +185,67 @@ def test_load_combos_data_driven():
     assert analyze.legacy_minutes_rows(p) == 0
 
 
+ROOT = os.path.join(os.path.dirname(__file__), "..")
+
+
+def _run_analyze(args, mode="cli"):
+    """One analyze invocation; cwd=ROOT like a user in the repo root.
+
+    mode: cli         — `python -m entropy_arb analyze` (cli.py dispatch)
+          module      — `python -m entropy_arb.analyze` (module directly)
+          tool-script — the historical `python3 tools/analyze.py` wrapper
+    """
+    if mode == "cli":
+        cmd = [sys.executable, "-m", "entropy_arb", "analyze"] + args
+    elif mode == "module":
+        cmd = [sys.executable, "-m", "entropy_arb.analyze"] + args
+    else:
+        cmd = [sys.executable, os.path.join(_TOOLS, "analyze.py")] + args
+    return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+
+
 def test_analyze_subprocess():
     p = build_db(tmp_db(), [("SNDK", "entropy", "lighter-rh")])
-    r = subprocess.run(
-        [sys.executable, os.path.join(_TOOLS, "analyze.py"), "--db", p],
-        capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    assert "SNDK · entropy×lighter-rh" in r.stdout
-    assert "SELL entropy" in r.stdout and "BUY entropy" in r.stdout
-    assert "thresholds:" in r.stdout
+    for mode in ("cli", "module", "tool-script"):
+        r = _run_analyze(["--db", p], mode=mode)
+        assert r.returncode == 0, (mode, r.stderr)
+        assert "SNDK · entropy×lighter-rh" in r.stdout
+        assert "SELL entropy" in r.stdout and "BUY entropy" in r.stdout
+        assert "thresholds:" in r.stdout
+
+
+def test_analyze_cli_matches_tool_wrapper():
+    # same db -> byte-identical report from the CLI subcommand and the
+    # compatibility script
+    p = build_db(tmp_db(), [("SNDK", "entropy", "lighter-rh"),
+                            ("TSLA", "tradexyz", "lighter")])
+    a = _run_analyze(["--db", p], mode="cli")
+    b = _run_analyze(["--db", p], mode="tool-script")
+    assert a.returncode == b.returncode == 0, (a.stderr, b.stderr)
+    assert a.stdout == b.stdout
 
 
 def test_analyze_filters():
     p = build_db(tmp_db(), [("SNDK", "entropy", "lighter-rh"),
                             ("TSLA", "tradexyz", "lighter")])
-    base = [sys.executable, os.path.join(_TOOLS, "analyze.py"), "--db", p]
+    base = ["--db", p]
 
-    r = subprocess.run(base + ["--symbol", "TSLA"],
-                       capture_output=True, text=True)
+    r = _run_analyze(base + ["--symbol", "TSLA"])
     assert r.returncode == 0, r.stderr
     assert "TSLA · tradexyz×lighter" in r.stdout
     assert "SNDK" not in r.stdout
 
-    r = subprocess.run(base + ["--base-venue", "tradexyz"],
-                       capture_output=True, text=True)
+    r = _run_analyze(base + ["--base-venue", "tradexyz"])
     assert r.returncode == 0, r.stderr
     assert "TSLA · tradexyz×lighter" in r.stdout
     assert "SNDK" not in r.stdout
 
-    r = subprocess.run(base + ["--hedge-venue", "lighter-rh"],
-                       capture_output=True, text=True)
+    r = _run_analyze(base + ["--hedge-venue", "lighter-rh"])
     assert r.returncode == 0, r.stderr
     assert "SNDK · entropy×lighter-rh" in r.stdout
     assert "TSLA" not in r.stdout
 
-    r = subprocess.run(base + ["--symbol", "NOPE"],
-                       capture_output=True, text=True)
+    r = _run_analyze(base + ["--symbol", "NOPE"])
     assert r.returncode == 1
     assert "no data" in r.stderr
 
@@ -225,18 +253,14 @@ def test_analyze_filters():
 def test_analyze_old_shape_hint():
     # old per-symbol table only: hint, exit 1, no report
     p = build_legacy_db(tmp_db(), per_symbol_tables=True)
-    r = subprocess.run(
-        [sys.executable, os.path.join(_TOOLS, "analyze.py"), "--db", p],
-        capture_output=True, text=True)
+    r = _run_analyze(["--db", p])
     assert r.returncode == 1
     assert "migrate_per_symbol" in r.stderr
     assert "thresholds:" not in r.stdout   # never reports from old tables
 
     # shared legacy `minutes` only: same behavior
     p2 = build_legacy_db(tmp_db(), per_symbol_tables=False)
-    r = subprocess.run(
-        [sys.executable, os.path.join(_TOOLS, "analyze.py"), "--db", p2],
-        capture_output=True, text=True)
+    r = _run_analyze(["--db", p2])
     assert r.returncode == 1
     assert "migrate_per_symbol" in r.stderr
     assert "thresholds:" not in r.stdout
