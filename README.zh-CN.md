@@ -113,6 +113,18 @@ entropy-arb          # 或带覆盖参数：--symbol SNDK --base entropy --hedge
 不带 `--record-only` 运行时，只要两边行情就绪且溢价越过带宽，就会立即
 发送真实订单。
 
+**一键清仓。** 平掉指定组合两腿在交易所的真实持仓——例如引擎 HALT 后、
+持仓中断电/崩溃后、或下线某个市场前——无需启动策略循环：
+
+```bash
+entropy-arb flatten --symbol SNDK --base entropy --hedge lighter-rh
+```
+
+命令会读取两腿真实持仓，按实时盘口以 `hedge_slippage_bps` 价格保护发送
+reduce-only 平仓单，并重复若干轮直到两腿清零（退出码 0）；低于
+`net_tolerance_base` 的残余零头视为已清仓。需要配置密钥（会发送真实订单）；
+策略与数据采集都不会启动。
+
 **仪表盘。** 在终端运行时会显示实时 Rich 仪表盘：两边盘口（含数据龄/点差）、
 持仓与上限、账户权益与本次会话盈亏、两个方向的可成交溢价对比完整门槛
 （已含手续费与库存加价，● 表示已武装）、数据采集进度、最近成交，以及日志
@@ -337,7 +349,8 @@ entropy_arb/venue_hl.py  Hyperliquid dex 适配器（Entropy、tradexyz）
 entropy_arb/venue_lighter.py  zkLighter 适配器（主网、Robinhood 链）
 entropy_arb/venue_aster.py    Aster DEX V3 适配器（EIP-712 签名 REST）
 entropy_arb/venue_polymarket.py  Polymarket Perps 适配器（proxy 钱包，msgpack+EIP-712 签名 REST）
-entropy_arb/engine.py    双交易所策略主循环
+entropy_arb/engine.py    双交易所策略主循环 + 共享 venue 工厂
+entropy_arb/flatten.py   一键清仓（`entropy-arb flatten`）
 entropy_arb/dashboard.py Rich 终端仪表盘
 entropy_arb/recorder.py  分钟级盘口数据采集
 entropy_arb/analyze.py    分析器核心 — 亦即 `entropy-arb analyze` / tools/analyze.py

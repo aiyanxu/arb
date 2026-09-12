@@ -44,6 +44,25 @@ CSV_HEADER = ["ts", "direction", "buy_venue", "sell_venue", "qty",
 BALANCE_POLL_SEC = 30.0
 
 
+def make_venue(cfg, vc, session):
+    """Venue adapter for one leg's VenueConf — shared by the engine and the
+    `flatten` subcommand (entropy_arb/flatten.py). The four adapter classes
+    share no base class (duck-typed), so the result is deliberately typed
+    loose: callers access per-kind attributes directly."""
+    from typing import Any
+    v: Any
+    if vc.kind == "lighter":
+        v = LighterVenue(vc, session, cfg.settle_timeout_sec)
+    elif vc.kind == "aster":
+        v = AsterVenue(vc, session, cfg.settle_timeout_sec)
+    elif vc.kind == "polymarket":
+        v = PolymarketVenue(vc, session, cfg.settle_timeout_sec)
+    else:
+        v = HLVenue(vc, cfg.hl_api_url, cfg.hl_ws_url,
+                    session, cfg.settle_timeout_sec)
+    return v
+
+
 class Engine:
     def __init__(self, cfg: Config, record_only: bool = False) -> None:
         self.cfg = cfg
@@ -135,14 +154,7 @@ class Engine:
             await self.session.close()
 
     def _make_venue(self, vc):
-        if vc.kind == "lighter":
-            return LighterVenue(vc, self.session, self.cfg.settle_timeout_sec)
-        if vc.kind == "aster":
-            return AsterVenue(vc, self.session, self.cfg.settle_timeout_sec)
-        if vc.kind == "polymarket":
-            return PolymarketVenue(vc, self.session, self.cfg.settle_timeout_sec)
-        return HLVenue(vc, self.cfg.hl_api_url, self.cfg.hl_ws_url,
-                       self.session, self.cfg.settle_timeout_sec)
+        return make_venue(self.cfg, vc, self.session)
 
     async def _run_inner(self) -> None:
         cfg = self.cfg

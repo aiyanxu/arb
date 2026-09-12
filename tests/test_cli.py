@@ -35,6 +35,27 @@ def run_cli(args):
         cwd=ROOT, capture_output=True, text=True)
 
 
+def test_flatten_requires_base_hedge_symbol():
+    # --base / --hedge are mandatory for flatten: a bogus venue must be
+    # rejected by argparse's choices (exit 2), not silently accepted
+    r = run_cli(["flatten", "--symbol", "SNDK", "--base", "entropy",
+                 "--hedge", "no-such-venue"])
+    assert r.returncode == 2
+    assert "invalid choice" in r.stderr
+
+
+def test_flatten_missing_creds_clean_error():
+    # with no credentials anywhere, flatten must refuse before touching the
+    # network (a clear message, exit 2 — not a traceback)
+    missing = os.path.join(tempfile.gettempdir(), "no-such-entropy-arb.yaml")
+    r = run_cli(["flatten", "--symbol", "SNDK", "--base", "entropy",
+                 "--hedge", "lighter-rh", "--config", missing,
+                 "--env-file", NO_ENV])
+    assert r.returncode == 2
+    # the config file is still required and named when missing
+    assert "config file" in r.stderr and "not found" in r.stderr
+
+
 def test_config_flag_missing_file_clean_error():
     # the flag's path is what gets opened: a bogus path must be named, not
     # the default config.yaml

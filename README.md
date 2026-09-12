@@ -125,6 +125,20 @@ entropy-arb              # or with overrides: --symbol SNDK --base entropy --hed
 Running without `--record-only` sends real orders immediately once both
 feeds are fresh and the band is crossed.
 
+**One-shot flatten.** To close both legs' actual exchange positions for a
+pair — e.g. after a HALT, a crash mid-position, or before tearing a market
+down — without starting the strategy:
+
+```bash
+entropy-arb flatten --symbol SNDK --base entropy --hedge lighter-rh
+```
+
+It reads each venue's real position, sends reduce-only taker orders with
+`hedge_slippage_bps` price protection against the live book, and retries
+until both venues are flat (exit 0); residual dust below
+`net_tolerance_base` counts as flat. Needs credentials (it sends real
+orders); the strategy and recorder are never started.
+
 **Dashboard.** On a terminal the bot shows a live Rich dashboard: both
 books with age/spread, positions and caps, equity and session PnL, the
 executable premium of each direction against its full hurdle (fees and
@@ -368,7 +382,8 @@ entropy_arb/venue_hl.py  Hyperliquid dex adapter (Entropy, tradexyz)
 entropy_arb/venue_lighter.py  zkLighter adapter (mainnet, Robinhood chain)
 entropy_arb/venue_aster.py    Aster DEX V3 adapter (EIP-712 signed REST)
 entropy_arb/venue_polymarket.py  Polymarket Perps adapter (proxy-wallet, msgpack+EIP-712 signed REST)
-entropy_arb/engine.py    the two-venue strategy loop
+entropy_arb/engine.py    the two-venue strategy loop + shared venue factory
+entropy_arb/flatten.py   one-shot close of both legs (`entropy-arb flatten`)
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars
 entropy_arb/analyze.py    analyzer core — also `entropy-arb analyze` / tools/analyze.py

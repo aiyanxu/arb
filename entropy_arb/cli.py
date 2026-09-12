@@ -12,6 +12,9 @@
     # LIVE trading: real orders, real money (needs .env credentials)
     entropy-arb
 
+    # one-shot close BOTH legs' positions for a (base, hedge, symbol) pair
+    entropy-arb flatten --symbol SNDK --base entropy --hedge lighter-rh
+
     # analyze recorded minute data -> suggested thresholds (no config needed)
     entropy-arb analyze [--db logs/minutes.duckdb] [--symbol SNDK] ...
 
@@ -98,9 +101,67 @@ def analyze_entry(argv: list[str]) -> None:
     analyze_main(argv)
 
 
+def flatten_entry(args) -> None:
+    """`entropy-arb flatten --symbol S --base A --hedge B` — one-shot close.
+
+    Loads config.yaml (+ .env credentials — flatten sends real orders),
+    then closes both legs' actual exchange positions with reduce-only
+    orders. Any per-run overrides win over config.yaml, same as the
+    trading path. Never starts the strategy or the recorder.
+    """
+    from entropy_arb.flatten import run_flatten
+    try:
+        cfg = load_config(args.config, args.env_file,
+                          symbol=args.symbol, base_venue=args.base,
+                          hedge_venue=args.hedge,
+                          symbol_map_file=args.symbol_map)
+    except ConfigError as e:
+        print(f"config error: {e}", file=sys.stderr)
+        sys.exit(2)
+    if not cfg.creds_complete:
+        print("flatten sends real orders and needs credentials for both "
+              "venues in the env file / 清仓会发送真实订单，需要在环境文件中"
+              "配置两个交易所的密钥", file=sys.stderr)
+        sys.exit(2)
+    setup_logging(cfg.log_level)
+    try:
+        asyncio.run(run_flatten(cfg))
+    except (RuntimeError, ConfigError) as e:
+        print(f"flatten failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "analyze":
         analyze_entry(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "flatten":
+        p = argparse.ArgumentParser(
+            prog="entropy-arb flatten",
+            description="one-shot close of BOTH legs' real exchange "
+                        "positions for a (base, hedge, symbol) pair — "
+                        "reduce-only takers with price protection, "
+                        "retried until flat. Sends real orders: needs .env "
+                        "credentials. / 一键清仓指定组合两腿的真实持仓，"
+                        "只发 reduce-only 平仓单（价格保护），重复直到清零。"
+                        "会发送真实订单，需要 .env 密钥。")
+        p.add_argument("--symbol", required=True,
+                       help="symbol whose position to close, e.g. SNDK")
+        p.add_argument("--base", required=True, choices=VENUES,
+                       metavar="VENUE",
+                       help=f"base leg venue, one of: {', '.join(VENUES)}")
+        p.add_argument("--hedge", required=True, choices=VENUES,
+                       metavar="VENUE",
+                       help="hedge leg venue, must differ from --base")
+        p.add_argument("--config", default="config.yaml",
+                       help="strategy config (default: config.yaml)")
+        p.add_argument("--env-file", default=".env",
+                       help="credentials file (default: .env)")
+        p.add_argument("--symbol-map", default="symbol_map.yaml",
+                       help="symbol -> venue symbol overrides "
+                            "(default: symbol_map.yaml, missing file = no "
+                            "overrides / symbol 映射表，文件不存在则为空)")
+        flatten_entry(p.parse_args(sys.argv[2:]))
         return
 
     p = argparse.ArgumentParser(
@@ -108,8 +169,9 @@ def main() -> None:
                     "lighter-rh / tradexyz / aster / polymarket as base, "
                     "any other as "
                     "hedge. Without --record-only, real orders are sent. "
-                    "Subcommand `analyze` (entropy-arb analyze) suggests "
-                    "thresholds from recorded data instead of trading.")
+                    "Subcommand `analyze` suggests thresholds from recorded "
+                    "data; `flatten` closes both legs' positions for a pair "
+                    "instead of trading.")
     p.add_argument("--symbol", default=None,
                    help="override the symbol from config.yaml, e.g. SNDK / "
                         "覆盖 config.yaml 中的交易品种")
