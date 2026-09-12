@@ -126,22 +126,3 @@ logging:
   trades_csv: logs/trades.csv
   dashboard: true
   file: logs/engine.log
-
-# ==================== TELEGRAM NOTIFICATIONS / Telegram 通知 ================
-# Push log lines (fills, hedges, rate limits, venue outages, HALT) to a
-# Telegram chat. Credentials in .env: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
-# (see .env.example). The engine needs no changes — every log line at
-# min_level or above is forwarded; bursts are merged into one message.
-# heartbeats: periodic [status] lines are thinned to one per heartbeat_sec,
-# so a silent chat means the process is down.
-# 将日志按级别转发到 Telegram（成交、对冲、限频、故障、HALT）。凭据放 .env
-# （TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID，见 .env.example），突发日志合并为
-# 一条消息发送。engine 挂掉后 Telegram 沉默本身就是报警。
-telegram:
-  enabled: false
-  min_level: WARNING       # minimum level to forward (INFO pushes everything)
-  heartbeat_sec: 300.0     # one [status] line per window, 0 = forward all
-  session_prefix: ""       # prepended to every message, e.g. "[SNDK]"
-  # bot_token / chat_id can also be set here; they win over .env
-  #bot_token: "123456:ABC-DEF..."
-  #chat_id: "42"

@@ -149,14 +149,20 @@ display the dashboard in Chinese. Use `--no-dashboard` for plain console
 logs (nohup/systemd — off-terminal runs fall back automatically), or set
 `logging.dashboard: false`.
 
-**Telegram notifications.** Fills, hedges, rate limits, venue outages and
-the critical HALT can be pushed to a Telegram chat. Setup: create a bot
-with @BotFather, put `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`
-(see `.env.example`), then set `telegram.enabled: true` in `config.yaml`.
-`min_level` picks the threshold (default WARNING); bursts merge into one
-message, and the periodic `[status]` heartbeat is thinned to one per
-`heartbeat_sec` — a silent chat means the process is down. Notification
-failures never affect trading.
+**Telegram notifications (capability, opt-in by code).** The `notify`
+module provides a one-shot send API — nothing is forwarded automatically:
+
+```python
+from entropy_arb import notify
+notify.send("base +2 -> 0, hedge -1.5 -> 0 — both legs flat")
+```
+
+Setup: create a bot with @BotFather, put `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` in `.env` (see `.env.example`). Without credentials every
+`send()` is a silent no-op; with them, messages are throttled to ~1/s
+(Telegram's per-chat limit) by a background thread and never block or raise
+— notification failures cannot affect trading. `notify.drain()` waits for
+pending sends at shutdown. Where/when to call `send()` is up to you.
 
 ## Docker
 
@@ -393,7 +399,7 @@ entropy_arb/venue_aster.py    Aster DEX V3 adapter (EIP-712 signed REST)
 entropy_arb/venue_polymarket.py  Polymarket Perps adapter (proxy-wallet, msgpack+EIP-712 signed REST)
 entropy_arb/engine.py    the two-venue strategy loop + shared venue factory
 entropy_arb/flatten.py   one-shot close of both legs (`entropy-arb flatten`)
-entropy_arb/notify.py    telegram log forwarding (`telegram.enabled: true`)
+entropy_arb/notify.py    telegram send API — call notify.send() where wanted
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars
 entropy_arb/analyze.py    analyzer core — also `entropy-arb analyze` / tools/analyze.py

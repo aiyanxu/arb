@@ -198,8 +198,6 @@ class Config:
     trades_csv: str
     dashboard: bool
     log_file: str
-    # telegram notifications (dict: enabled/min_level/heartbeat_sec/...)
-    telegram: Optional[dict] = None
     # runtime
     hl_api_url: str = HL_API_URL
     hl_ws_url: str = HL_WS_URL
@@ -280,16 +278,6 @@ _SCHEMA: Dict[str, Any] = {
         "trades_csv": str,
         "dashboard": bool,
         "file": str,
-    },
-    "telegram": {
-        "enabled": bool,
-        "min_level": str,
-        "heartbeat_sec": float,
-        "session_prefix": str,
-        # credentials normally live in .env (TELEGRAM_BOT_TOKEN /
-        # TELEGRAM_CHAT_ID); explicit values here win
-        "bot_token": str,
-        "chat_id": str,
     },
 }
 
@@ -568,5 +556,4 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         trades_csv=_get(raw, "logging", "trades_csv", "logs/trades.csv"),
         dashboard=bool(_get(raw, "logging", "dashboard", True)),
         log_file=_get(raw, "logging", "file", "logs/engine.log"),
-        telegram=dict(raw.get("telegram") or {}),
     )

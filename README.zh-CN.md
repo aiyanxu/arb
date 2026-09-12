@@ -133,12 +133,18 @@ reduce-only 平仓单，并重复若干轮直到两腿清零（退出码 0）；
 可切换为纯日志输出（nohup/systemd 等非终端环境会自动退回纯日志），也可
 设置 `logging.dashboard: false`。
 
-**Telegram 通知。** 成交、对冲、限频、交易所故障与 HALT 告警可推送到
-Telegram。准备：用 @BotFather 创建机器人，把 `TELEGRAM_BOT_TOKEN` 和
-`TELEGRAM_CHAT_ID` 填进 `.env`（见 `.env.example`），再在 `config.yaml`
-中设置 `telegram.enabled: true`。`min_level` 决定转发门槛（默认 WARNING）；
-突发日志合并为一条消息发送，周期性 `[status]` 心跳按 `heartbeat_sec` 抽稀——
-群里沉默本身即代表进程已挂。通知发送失败绝不影响交易。
+**Telegram 通知能力。** 本模块只提供发送能力，不自动转发任何日志：
+
+```python
+from entropy_arb import notify
+notify.send("base +2 -> 0, hedge -1.5 -> 0 — 两腿已清零")
+```
+
+准备：用 @BotFather 创建机器人，把 `TELEGRAM_BOT_TOKEN` 和
+`TELEGRAM_CHAT_ID` 填进 `.env`（见 `.env.example`）。未配置凭据时
+`send()` 是静默空操作；配置后由后台线程按 ~1条/秒节流发送（Telegram
+单聊限制），绝不阻塞交易、绝不抛异常。何时调用 `send()`（成交、HALT、
+日报等）由你的代码决定。
 
 ## Docker 部署
 
@@ -358,7 +364,7 @@ entropy_arb/venue_aster.py    Aster DEX V3 适配器（EIP-712 签名 REST）
 entropy_arb/venue_polymarket.py  Polymarket Perps 适配器（proxy 钱包，msgpack+EIP-712 签名 REST）
 entropy_arb/engine.py    双交易所策略主循环 + 共享 venue 工厂
 entropy_arb/flatten.py   一键清仓（`entropy-arb flatten`）
-entropy_arb/notify.py    Telegram 日志转发（`telegram.enabled: true`）
+entropy_arb/notify.py    Telegram 发送 API — 在需要处调用 notify.send()
 entropy_arb/dashboard.py Rich 终端仪表盘
 entropy_arb/recorder.py  分钟级盘口数据采集
 entropy_arb/analyze.py    分析器核心 — 亦即 `entropy-arb analyze` / tools/analyze.py
