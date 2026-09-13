@@ -112,7 +112,15 @@ entropy-arb analyze                        # == python3 tools/analyze.py
 ```
 
 It prints the premium distribution, how often each candidate band would have
-fired, and a ready-to-paste `thresholds:` block for `config.yaml`.
+fired, and a ready-to-paste `thresholds:` block for `config.yaml`. Pass
+`--config config.yaml` to take the defaults from the strategy file: the
+recorder db, the symbol and both venues, and the pair's actual taker fees
+(`--db` / `--symbol` / `--base-venue` / `--hedge-venue` / `--fees-bps` still
+override it per flag):
+
+```bash
+entropy-arb analyze --config config.yaml
+```
 
 **3. Go live** — fill in `.env`, install the signing SDKs, and start with
 the smallest position caps that clear the venue minimums:
@@ -296,7 +304,9 @@ tables share the layout below:
 Recorded edges are pre-fee; the analyzer subtracts `--fees-bps` (pass the
 **sum** of both venues' taker fees — default 0.0 for the zero-fee venues,
 ~1.0 with a `tradexyz` leg) before counting firings, so its table and
-suggestions translate directly into config values. `--hours 24` restricts to
+suggestions translate directly into config values. With `--config` the fee
+sum, db and pair come from the config file automatically (an explicit
+`--fees-bps` still wins). `--hours 24` restricts to
 recent data; premiums drift, so re-run it regularly and update
 `config.yaml`. Premiums are pair-relative — re-measure whenever either leg's
 venue changes.

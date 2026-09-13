@@ -407,6 +407,21 @@ def _env_i(name: str) -> Optional[int]:
     return int(v) if v not in (None, "") else None
 
 
+def _leg_fee(role: str, venue: str, sec: dict) -> float:
+    """One leg's effective taker fee: the yaml override or the venue default,
+    never below the default (underestimating a venue's fee makes every
+    threshold systematically too loose — never let it pass silently)."""
+    spec = VENUE_REGISTRY[venue]
+    fee = float(sec.get("taker_fee_bps", spec.fee_bps))
+    if spec.kind in ("hl", "aster", "polymarket") and fee < spec.fee_bps:
+        raise ConfigError(
+            f"{venue!r} charges ~{spec.fee_bps:.1f} bps taker but "
+            f"{role}.taker_fee_bps is {fee} — the fee must not be configured "
+            f"below the venue default / 手续费配置低于该交易所默认费率，"
+            f"阈值会系统性偏松")
+    return fee
+
+
 def _make_leg(role: str, venue: str, raw: dict, symbol: str) -> VenueConf:
     """Build one leg (base or hedge) from the venue registry + yaml section.
 
@@ -422,15 +437,7 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str) -> VenueConf:
             f"'{role}.dex' only applies to Hyperliquid venues — {venue!r} is "
             f"a Lighter deployment, Aster or Polymarket / dex 仅适用于 "
             f"Hyperliquid 交易所")
-    fee = float(sec.get("taker_fee_bps", spec.fee_bps))
-    if spec.kind in ("hl", "aster", "polymarket") and fee < spec.fee_bps:
-        # underestimating a venue's fee makes every threshold systematically
-        # too loose — never let it pass silently
-        raise ConfigError(
-            f"{venue!r} charges ~{spec.fee_bps:.1f} bps taker but "
-            f"{role}.taker_fee_bps is {fee} — the fee must not be configured "
-            f"below the venue default / 手续费配置低于该交易所默认费率，"
-            f"阈值会系统性偏松")
+    fee = _leg_fee(role, venue, sec)
     cap = float(sec.get("max_position_usd", 1000.0))
     orders = int(sec.get("max_orders_per_min", spec.orders_per_min))
 
@@ -598,3 +605,82 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         log_file=_get(raw, "logging", "file", "logs/engine.log"),
         threshold_check=dict(raw.get("threshold_check") or {}),
     )
+
+
+def analyze_defaults_from_config(
+    config_file: str = "config.yaml",
+    *,
+    symbol: Optional[str] = None,
+    base_venue: Optional[str] = None,
+    hedge_venue: Optional[str] = None,
+) -> Dict[str, Any]:
+    """What `entropy-arb analyze --config <file>` derives from config.yaml:
+    the recorder db path, the (symbol, base_venue, hedge_venue) pair, and the
+    pair's SUMMED taker fees (the analyzer subtracts that sum from recorded
+    pre-fee edges). Credentials, sizing, execution — everything the analyzer
+    doesn't need — are never read, and no .env is loaded.
+
+    Same strictness as load_config: full schema validation (typos are
+    errors), the fee rule (never below the venue default), and the
+    venue/differ checks. Only `thresholds` is not required — analyze is how
+    the user picks them. (The same-dex guard is deliberately absent: analyze
+    only filters recorded data by the pair and never trades it.)
+    """
+    try:
+        with open(config_file) as fh:
+            raw = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        raise ConfigError(
+            f"config file '{config_file}' not found — copy config.example.yaml "
+            f"to config.yaml and edit it / 未找到配置文件，请先复制 "
+            f"config.example.yaml 为 config.yaml 并修改")
+    if "entropy" in raw:
+        raise ConfigError(
+            "config key 'entropy' was renamed to 'base' (the base leg's venue "
+            "is now 'base_venue') / 配置键 'entropy' 已改名为 'base'，"
+            "base 腿的交易所用 'base_venue' 指定")
+    _validate(raw, _SCHEMA)
+
+    # the CLI --symbol / --base-venue / --hedge-venue filters win over the
+    # yaml; an empty string counts as "not provided"
+    symbol = (symbol or raw.get("symbol") or "").strip()
+    if not symbol:
+        raise ConfigError(
+            "symbol is required — set 'symbol:' in config.yaml or pass "
+            "--symbol SNDK / 必须指定交易品种：在 config.yaml 填 symbol，"
+            "或启动时用 --symbol 指定")
+    base_venue = (base_venue or raw.get("base_venue")
+                  or DEFAULT_BASE_VENUE).strip()
+    hedge_venue = hedge_venue or (raw.get("hedge_venue") or "").strip()
+    if base_venue not in VENUES:
+        raise ConfigError(
+            f"base_venue must be one of {list(VENUES)}, got {base_venue!r} — "
+            f"set 'base_venue:' in config.yaml / base 腿必须是 "
+            f"{list(VENUES)} 之一：在 config.yaml 填 base_venue")
+    if hedge_venue not in VENUES:
+        raise ConfigError(
+            f"hedge_venue must be one of {list(VENUES)}, got "
+            f"{hedge_venue!r} — set 'hedge_venue:' in config.yaml / "
+            f"对冲腿必须是 {list(VENUES)} 之一：在 config.yaml 填 "
+            f"hedge_venue")
+    if base_venue == hedge_venue:
+        raise ConfigError(
+            f"base_venue and hedge_venue must differ — both are "
+            f"{base_venue!r} / 两条腿不能是同一个交易所")
+
+    # per-venue symbol overrides: DEX naming can differ from the CLI symbol
+    symbol_map = _load_symbol_map("symbol_map.yaml")
+    mapped = symbol_map.get(symbol, {})
+    base_symbol = mapped.get(base_venue, symbol)
+    hedge_symbol = mapped.get(hedge_venue, symbol)
+
+    return {
+        "db": str(_get(raw, "recorder", "db", "logs/minutes.duckdb")),
+        "symbol": symbol,
+        "base_venue": base_venue,
+        "hedge_venue": hedge_venue,
+        "base_symbol": base_symbol,
+        "hedge_symbol": hedge_symbol,
+        "fees_bps": _leg_fee("base", base_venue, raw.get("base") or {})
+        + _leg_fee("hedge", hedge_venue, raw.get("hedge") or {}),
+    }

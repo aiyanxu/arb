@@ -100,7 +100,14 @@ entropy-arb analyze                        # == python3 tools/analyze.py
 ```
 
 它会输出溢价分布、各档带宽的历史触发频率，以及可直接粘贴进
-`config.yaml` 的 `thresholds:` 配置块。
+`config.yaml` 的 `thresholds:` 配置块。也可以用 `--config` 直接读取
+策略配置文件，自动带出 recorder 数据库路径、symbol 与两腿 venue、以及
+两腿吃单费之和（显式传入的 `--db` / `--symbol` / `--base-venue` /
+`--hedge-venue` / `--fees-bps` 仍然优先）：
+
+```bash
+entropy-arb analyze --config config.yaml
+```
 
 **第三步：实盘** —— 填写 `.env`，安装签名 SDK，仓位上限从刚好满足
 交易所最小名义的水平开始：
@@ -269,7 +276,9 @@ docker run --rm --entrypoint entropy-arb -v ./logs:/app/logs \
 
 采集的 edge 为费前口径；分析工具在统计触发频率前会先扣除 `--fees-bps`
 （请传入**两边吃单费之和**——零费交易所默认 0.0，腿为 `tradexyz` 时
-约为 1.0），因此其表格与建议值可直接填入配置。`--hours 24`
+约为 1.0），因此其表格与建议值可直接填入配置。使用 `--config` 时，
+费率之和、数据库与交易组合会自动从配置文件带出（显式传入的
+`--fees-bps` 仍然优先）。`--hours 24`
 可只分析最近数据；溢价中枢会漂移，请定期重新分析并更新 `config.yaml`。
 溢价是组合相对的——任一腿换了 venue 都要重新测量。
 

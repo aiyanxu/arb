@@ -42,11 +42,14 @@ hedge_venue: lighter-rh
 #
 # midline_bps is a number YOU derive from recorded data. Run the bot
 # (--record-only) to collect logs/minutes.duckdb, then:  entropy-arb analyze
+# (or `entropy-arb analyze --config config.yaml` — db, pair and this file's
+# taker fees are picked up automatically)
 #
 # midline_bps 是你根据采集数据设定的值（仅适用于当前 base/hedge 组合——
 # 更换任一腿后需重新采集分析）。先运行机器人（--record-only）采集
 # logs/minutes.duckdb，再运行 entropy-arb analyze（等价于
-# python3 tools/analyze.py）获取建议值。
+# python3 tools/analyze.py）获取建议值；也可加 --config config.yaml，
+# 自动读取数据库路径、交易组合与费率。
 # 两个方向的门槛都已扣除手续费（引擎会在此之上另加手续费），因此一次完整往返
 # 扣费后净赚 >= upper + lower bps。
 thresholds:

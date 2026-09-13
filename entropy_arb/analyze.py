@@ -34,6 +34,18 @@ Usage:
     entropy-arb analyze --db p.duckdb --symbol SNDK --base-venue entropy \
         --hedge-venue lighter-rh
     entropy-arb analyze --hours 24 --min-samples 10
+
+    entropy-arb analyze --config config.yaml        # --db/--symbol/--base-venue/
+                                                    # --hedge-venue/--fees-bps all
+                                                    # default from the strategy file
+                                                    # (recorder.db, symbol/base_venue/
+                                                    # hedge_venue, taker fees); an
+                                                    # explicit flag still wins
+
+With --config the fees default to the pair's actual sum of taker fees
+(config.example.yaml's taker_fee_bps sections, floored at each venue's
+default), so the firing counts and suggestions are already net of what a
+live run would pay — usually you don't pass --fees-bps at all.
 """
 from __future__ import annotations
 
@@ -159,25 +171,66 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(
         prog="entropy-arb analyze",
         description="suggest thresholds from recorded minute data")
-    p.add_argument("--db", default="logs/minutes.duckdb",
+    p.add_argument("--db", default=None,
                    help="DuckDB database written by the recorder "
-                        "(default: logs/minutes.duckdb)")
+                        "(default: logs/minutes.duckdb, or recorder.db from "
+                        "--config)")
     p.add_argument("--symbol", default=None,
-                   help="only analyze this symbol (default: all)")
+                   help="only analyze this symbol (default: all, or the "
+                        "config symbol with --config)")
     p.add_argument("--base-venue", default=None,
-                   help="only analyze this base venue (default: all)")
+                   help="only analyze this base venue (default: all, or the "
+                        "config base_venue with --config)")
     p.add_argument("--hedge-venue", default=None,
-                   help="only analyze this hedge venue (default: all)")
+                   help="only analyze this hedge venue (default: all, or the "
+                        "config hedge_venue with --config)")
+    p.add_argument("--config", default=None,
+                   help="config.yaml to take defaults from: recorder.db, "
+                        "symbol / base_venue / hedge_venue, and the pair's "
+                        "taker fees (used unless --fees-bps is given); the "
+                        "config file is NOT required to have thresholds "
+                        "already / 从 config.yaml 取 db、组合与费率默认值，"
+                        "文件无需已有 thresholds")
     p.add_argument("--hours", type=float, default=0.0,
                    help="only use the last N hours (0 = all data)")
     p.add_argument("--min-samples", type=int, default=10,
                    help="skip minutes with fewer fresh samples than this")
-    p.add_argument("--fees-bps", type=float, default=0.0,
+    p.add_argument("--fees-bps", type=float, default=None,
                    help="SUM of both venues' taker fees in bps (each crossing "
                         "pays both legs); recorded edges are pre-fee, so this "
-                        "is subtracted before counting firings (default 0.0 — "
-                        "pass ~1.0 with a tradexyz hedge)")
+                        "is subtracted before counting firings (default: from "
+                        "config.yaml with --config, else 0.0 — pass ~1.0 with "
+                        "a tradexyz hedge)")
     args = p.parse_args(argv)
+    args.fees_from_cli = args.fees_bps is not None
+
+    if args.config:
+        # --config: the strategy file is the source of defaults — recorder.db
+        # for --db, symbol/base_venue/hedge_venue for the filters, and the
+        # pair's actual taker fees for --fees-bps (thresholds are net-of-fee).
+        # An explicit flag wins over the file; no .env is read.
+        from entropy_arb.config import ConfigError, analyze_defaults_from_config
+        try:
+            d = analyze_defaults_from_config(args.config, symbol=args.symbol,
+                                             base_venue=args.base_venue,
+                                             hedge_venue=args.hedge_venue)
+        except ConfigError as e:
+            print(f"config error: {e}", file=sys.stderr)
+            sys.exit(2)
+        args.db = args.db or d["db"]
+        args.symbol = args.symbol or d["symbol"]
+        args.base_venue = args.base_venue or d["base_venue"]
+        args.hedge_venue = args.hedge_venue or d["hedge_venue"]
+        if args.fees_bps is None:
+            args.fees_bps = d["fees_bps"]
+    if args.fees_bps is None:
+        args.fees_bps = 0.0
+    if not args.db:
+        args.db = "logs/minutes.duckdb"
+    # where the fee number came from — shown next to the firing table so a
+    # config-derived fee is never mistaken for the pre-fee default of 0.0
+    args.fees_source = None if args.config is None or args.fees_from_cli \
+        else args.config
 
     if not os.path.exists(args.db):
         print(f"{args.db} not found — run the bot (even --record-only) to "
@@ -271,7 +324,9 @@ def report(sym: str, base: str, venue: str, args, rows: list) -> None:
                       reverse=True)
 
     print(f"\nwith midline_bps = {midline:+.1f} (median) and {fees:.1f} bps "
-          f"round-trip taker fees, minutes each band would have fired / "
+          f"round-trip taker fees"
+          f"{'' if getattr(args, 'fees_source', None) is None else ' (from ' + args.fees_source + ')'}, "
+          f"minutes each band would have fired / "
           f"各档净阈值触发的分钟数:")
     print(f"  {'band bps':>9} | {'SELL ' + base:>17} | {'BUY ' + base:>17}")
     print(f"  {'':>9} | {'minutes':>8} {'per day':>8} | "
@@ -287,11 +342,13 @@ def report(sym: str, base: str, venue: str, args, rows: list) -> None:
     # fee-adjusted executable room), floored at 1 bps — tune from the table
     sug_upper = max(round(pctl(sorted(sell_room), 90) * 2) / 2, 1.0)
     sug_lower = max(round(pctl(sorted(buy_room), 90) * 2) / 2, 1.0)
+    fee_src = getattr(args, "fees_source", None)
+    fee_en = f"from {fee_src}" if fee_src else "passed via --fees-bps"
     print(f"""
 suggested starting point (fires ~10% of minutes, already net of the
-{fees:.1f} bps fees passed via --fees-bps; a full round trip nets
+{fees:.1f} bps fees {fee_en}; a full round trip nets
 >= upper+lower bps after fees) /
-建议起点（约 10% 的分钟触发；已扣除 --fees-bps 传入的 {fees:.1f} bps 手续费，
+建议起点（约 10% 的分钟触发；已扣除{f" {fee_src} 中" if fee_src else " --fees-bps 传入的"} {fees:.1f} bps 手续费，
 一次完整往返扣费后净赚 >= upper+lower bps）:
 
 thresholds:

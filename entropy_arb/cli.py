@@ -17,6 +17,7 @@
 
     # analyze recorded minute data -> suggested thresholds (no config needed)
     entropy-arb analyze [--db logs/minutes.duckdb] [--symbol SNDK] ...
+    entropy-arb analyze --config config.yaml   # db/pair/fees from config.yaml
 
 The markets you trade live in config.yaml (symbol:, base_venue:,
 hedge_venue:); --symbol, --base and --hedge are optional per-run overrides
