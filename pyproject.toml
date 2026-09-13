@@ -42,11 +42,19 @@ dev = [
     "pytest>=8",
 ]
 
+web = [
+    # dashboard backend (`entropy-arb web`) — frontend build products are
+    # committed under entropy_arb/webapp/static, so this is server-side only
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.26",
+]
+
 [project.scripts]
 entropy-arb = "entropy_arb.cli:main"
 
 [tool.setuptools]
-packages = ["entropy_arb"]
+packages = ["entropy_arb", "entropy_arb.webapp"]
 
 [tool.setuptools.dynamic]
 version = { attr = "entropy_arb.__version__" }

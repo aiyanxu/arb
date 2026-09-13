@@ -1,0 +1,140 @@
+"""webapp: FastAPI backend — REST endpoints, WS stream, static frontend.
+
+Run:  python3 -m pytest tests/  (or  python3 tests/test_web.py)
+"""
+import asyncio
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from entropy_arb.config import load_config  # noqa: E402
+from entropy_arb.webapp import make_app  # noqa: E402
+
+NO_ENV = os.path.join(tempfile.gettempdir(), "entropy-arb-no-such.env")
+
+
+def make_cfg(**thresholds):
+    f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+    thr = thresholds or {}
+    f.write(f"""
+thresholds:
+  midline_bps: {thr.get('midline', 5.0)}
+  upper_bps: 4.0
+  lower_bps: 4.0
+recorder:
+  db: {os.path.join(tempfile.mkdtemp(), 'no-such.duckdb')}
+""")
+    f.close()
+    return load_config(f.name, NO_ENV, symbol="SNDK",
+                       hedge_venue="lighter-rh")
+
+
+class StubVenue:
+    def __init__(self, key, name):
+        from entropy_arb.book import OrderBook
+        self.key, self.name, self.kind = key, name, "hl"
+        self.conf = type("C", (), {"symbol": "SNDK"})()
+        self.fee_bps, self.cap_usd = 0.0, 1000.0
+        self.position, self.cash = 0.5, -50.0
+        self.equity, self.volume_usd = 1000.0, 250.0
+        self.last_traded_ts = 0.0
+        self.book = OrderBook()
+        self.book.apply_hl([[{"px": "100.0", "sz": "5"}],
+                            [{"px": "100.02", "sz": "50"}]])
+
+
+class StubEngine:
+    """Just enough Engine surface for snapshot()."""
+    def __init__(self):
+        self.base = StubVenue("base", "ENTROPY")
+        self.hedge = StubVenue("hedge", "RH")
+        self.venues = {"base": self.base, "hedge": self.hedge}
+        self.stop = asyncio.Event()
+        self.record_only = True
+        self.halted = False
+        self.trades, self.hedges = 2, 1
+        self.total_exp_edge, self.total_fill_edge = 0.5, 0.42
+        self.start_ts = asyncio.get_event_loop().time() if False else 0.0
+        import time
+        self.start_ts = time.time() - 60.0
+        self.recent_trades = []
+        self.cfg = None
+
+    def session_pnl(self):
+        return 12.34
+
+    def premium_bps(self):
+        return 11.0
+
+    def request_stop(self):
+        self.stop.set()
+
+    async def run(self):
+        await asyncio.Event().wait()
+
+
+def test_health_and_config():
+    app = make_app(make_cfg(), engine=None)
+    with TestClient(app) as c:
+        r = c.get("/api/health")
+        assert r.status_code == 200 and r.json()["ok"] is True
+        cfg = c.get("/api/config").json()
+        assert cfg["symbol"] == "SNDK"
+        assert cfg["thresholds"]["upper_bps"] == 4.0
+        assert "private" not in str(cfg).lower()   # no credential fields
+
+
+def test_live_with_engine():
+    import time
+    eng = StubEngine()
+    with TestClient(make_app(make_cfg(), engine=eng)) as client:
+        snap = client.get("/api/live").json()
+        assert snap["mode"] == "live"
+        assert snap["engine"]["trades"] == 2
+        assert snap["venues"][0]["bid"] == 100.0
+        assert snap["symbol"] == "SNDK"
+
+
+def test_trades_csv_fallback():
+    import tempfile
+    csv_path = os.path.join(tempfile.mkdtemp(), "trades.csv")
+    with open(csv_path, "w") as fh:
+        fh.write("ts,direction,buy_venue,sell_venue,qty,buy_limit,"
+                 "sell_limit,buy_notional,sell_notional,exp_edge_usd,"
+                 "gross_edge_usd,marginal_premium_bps,midline_bps,"
+                 "inv_add_bps,ok,buy_fill,sell_fill,buy_status,sell_status,"
+                 "fill_edge_usd\n")
+        fh.write("1789000000.0,sell_base,ENTROPY,RH,1.0,100,100,100,100,"
+                "0.1,0.1,10.0,0,0,True,1,1,finished,finished,0.02\n")
+    cfg = make_cfg()
+    cfg.trades_csv = csv_path
+    with TestClient(make_app(cfg, engine=None)) as client:
+        body = client.get("/api/trades").json()
+        assert body["source"] == "csv"
+        assert len(body["rows"]) == 1
+        assert body["rows"][0]["direction"] == "sell_base"
+
+
+def test_threshold_suggestion_shape():
+    # no db -> clean error, not a 500
+    with TestClient(make_app(make_cfg())) as client:
+        body = client.get("/api/threshold-suggestion").json()
+        assert "error" in body or "reason" in body
+
+
+def test_static_frontend_served():
+    with TestClient(make_app(make_cfg())) as client:
+        r = client.get("/")
+        assert r.status_code == 200
+        assert b"html" in r.content[:200].lower() or b"entropy" in r.content
+
+
+if __name__ == "__main__":
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print(f"{name:40s} OK")

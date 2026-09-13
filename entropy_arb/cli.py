@@ -131,7 +131,74 @@ def flatten_entry(args) -> None:
         sys.exit(1)
 
 
+def web_entry(args) -> None:
+    """`entropy-arb web [--host H] [--port P] [--record-only]` — dashboard.
+
+    Runs the FastAPI backend (REST + /ws/live) with the built React frontend
+    and, by default, an in-process engine (--record-only for a credential-
+    free data-collection session) so the dashboard shows live state. The
+    web server never sends orders itself; the trading path is untouched.
+    """
+    from entropy_arb.webapp import make_app
+    try:
+        cfg = load_config(args.config, args.env_file,
+                          symbol=args.symbol, base_venue=args.base,
+                          hedge_venue=args.hedge,
+                          symbol_map_file=args.symbol_map)
+    except ConfigError as e:
+        print(f"config error: {e}", file=sys.stderr)
+        sys.exit(2)
+    setup_logging(cfg.log_level)
+
+    import uvicorn
+    eng = Engine(cfg, record_only=args.record_only)
+    app = make_app(cfg, engine=eng)
+    logging.getLogger("web").warning(
+        "dashboard on http://%s:%d — engine %s", args.host, args.port,
+        "record-only" if args.record_only else "LIVE (real orders)")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "web":
+        p = argparse.ArgumentParser(
+            prog="entropy-arb web",
+            description="web dashboard: FastAPI backend + built React "
+                        "frontend, with an in-process engine (real orders "
+                        "unless --record-only). Read-only control plane: "
+                        "the server itself never sends orders. / Web 仪表盘："
+                        "FastAPI 后端 + React 前端，内嵌引擎实时展示状态；"
+                        "网页服务本身不下单。")
+        p.add_argument("--host", default="127.0.0.1",
+                       help="bind address (default: 127.0.0.1)")
+        p.add_argument("--port", type=int, default=8000,
+                       help="port (default: 8000)")
+        p.add_argument("--record-only", action="store_true",
+                       help="run the embedded engine in record-only mode "
+                            "(no credentials, no orders)")
+        p.add_argument("--symbol", default=None,
+                       help="override the symbol from config.yaml")
+        p.add_argument("--base", default=None, choices=VENUES,
+                       metavar="VENUE")
+        p.add_argument("--hedge", default=None, choices=VENUES,
+                       metavar="VENUE")
+        p.add_argument("--config", default="config.yaml",
+                       help="strategy config (default: config.yaml)")
+        p.add_argument("--env-file", default=".env",
+                       help="credentials file (default: .env)")
+        p.add_argument("--symbol-map", default="symbol_map.yaml",
+                       help="symbol -> venue symbol overrides")
+        web_entry(p.parse_args(sys.argv[2:]))
+        return
+
+    p = argparse.ArgumentParser(
+        description="Two-venue LIVE arbitrage: any of entropy / lighter / "
+                    "lighter-rh / tradexyz / aster / polymarket as base, "
+                    "any other as "
+                    "hedge. Without --record-only, real orders are sent. "
+                    "Subcommands: `analyze` (thresholds from recorded data), "
+                    "`flatten` (close both legs), `web` (dashboard UI + "
+                    "API).")
     if len(sys.argv) > 1 and sys.argv[1] == "analyze":
         analyze_entry(sys.argv[2:])
         return

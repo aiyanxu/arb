@@ -171,6 +171,40 @@ Telegram notification when any of `midline_bps` / `upper_bps` / `lower_bps`
 drifts more than `tolerance` (10%) from the configured value — only a
 notification; config.yaml is never touched.
 
+notification; config.yaml is never touched.
+
+## Web dashboard (React + FastAPI)
+
+A separate front/back-end web app ships with the bot:
+
+- **Backend** (`entropy_arb/webapp/`, FastAPI): JSON API (`/api/health`,
+  `/api/config`, `/api/live`, `/api/trades`, `/api/minutes`,
+  `/api/threshold-suggestion`) plus a `/ws/live` WebSocket pushing a full
+  snapshot every 2s. Read-only by design — no order endpoints, no
+  credential data; the trading path stays in the engine/CLI.
+- **Frontend** (`frontend/`, React 19 + TypeScript + Vite): single-page
+  dashboard — engine mode/HALT/uptime, premium vs band, session PnL and
+  edges, per-venue book/position cards, recent executions, threshold
+  suggestion with drift highlighting. Live updates over the websocket with
+  auto-reconnect.
+
+Run it (installs fastapi/uvicorn, starts an in-process engine):
+
+```bash
+pip install -e ".[web]"
+entropy-arb web --record-only         # data-collection session + dashboard on :8000
+entropy-arb web                       # live engine attached (real orders!)
+# open http://127.0.0.1:8000
+```
+
+Without an embedded engine (point the tool at a config while the bot runs
+elsewhere) the dashboard degrades to artifact mode: recorded minute bars,
+trades.csv fills, config thresholds — everything except live books.
+
+To change the frontend: edit `frontend/src`, `npm run build` inside
+`frontend/`, then copy `frontend/dist/` to `entropy_arb/webapp/static/`
+(or ship the API alone — the built SPA is optional).
+
 ## Docker
 
 The image contains no secrets or config — `config.yaml`, `symbol_map.yaml`
@@ -408,6 +442,8 @@ entropy_arb/engine.py    the two-venue strategy loop + shared venue factory
 entropy_arb/flatten.py   one-shot close of both legs (`entropy-arb flatten`)
 entropy_arb/notify.py    telegram send API — call notify.send() where wanted
 entropy_arb/threshold_check.py  scheduled config-vs-data threshold drift check
+entropy_arb/webapp/       FastAPI backend + built React dashboard (entropy-arb web)
+frontend/                 React + TS + Vite source for the web dashboard
 entropy_arb/dashboard.py Rich terminal dashboard
 entropy_arb/recorder.py  1-minute orderbook bars
 entropy_arb/analyze.py    analyzer core — also `entropy-arb analyze` / tools/analyze.py

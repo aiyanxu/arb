@@ -1,0 +1,79 @@
+/* entropy-arb dashboard — dark terminal aesthetic */
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --muted: #8b949e;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --accent: #58a6ff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text, #c9d1d9);
+  color: var(--text);
+  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.app {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 16px 20px 40px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  border-bottom: 1px solid var(--border, #30363d);
+  padding-bottom: 10px;
+  margin-bottom: 16px;
+}
+
+h1 { font-size: 18px; margin: 0; font-weight: 600; }
+h1 .sym { color: var(--accent, #58a6ff); }
+
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #333);
+  margin-left: 8px;
+}
+.badge.ok { color: var(--ok, #3fb950); border-color: #2ea04366; }
+.badge.bad, .badge.off { color: var(--bad, #f85149); border-color: #f8514966; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 14px 0; }
+
+.card {
+  background: var(--panel, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.card .label { color: var(--muted, #8b949e); font-size: 12px; }
+.card .value { font-size: 18px; font-weight: 600; }
+.value.pos { color: #3fb950; }
+.value.neg { color: #f85149; }
+.card.stale { border-color: #d2992266; }
+.card.drift { color: #f0883e; }
+
+.venues { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
+.kv { display: flex; justify-content: space-between; gap: 8px; }
+.kv span { color: var(--muted, #8b949e); }
+.card-title { font-weight: 600; margin-bottom: 6px; }
+.muted { color: var(--muted, #8b949e); }
+.sym { color: #58a6ff; }
+
+table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--border, #21262d); text-align: left; }
+th { color: var(--muted, #8b949e); font-weight: 500; text-align: left; }
+td.drift { color: #f0883e; font-weight: 700; }
+td.ok { color: #3fb950; }
+tr.bad td { color: #f85149; }

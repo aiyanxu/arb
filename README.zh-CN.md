@@ -153,6 +153,35 @@ upper/lower），任一值与 config.yaml 的偏差超过 `tolerance`（默认 1
 通过 `notify.send()` 发送 Telegram 通知。仅通知，不自动修改配置；数据不足
 时静默跳过。
 
+## Web 仪表盘（React + FastAPI，前后端分离）
+
+随项目提供前后端分离的 Web 控制台：
+
+- **后端**（`entropy_arb/webapp/`，FastAPI）：JSON API（`/api/health`、
+  `/api/config`、`/api/live`、`/api/trades`、`/api/minutes`、
+  `/api/threshold-suggestion`）+ `/ws/live` WebSocket（每 2 秒推送完整
+  快照）。只读设计——没有下单端点、不含任何凭据；交易路径仍在引擎/CLI。
+- **前端**（`frontend/`，React 19 + TypeScript + Vite）：单页仪表盘——
+  引擎模式/HALT/运行时长、溢价 vs 带宽、会话盈亏与边际、各腿盘口/持仓
+  卡片、最近成交、阈值建议（漂移高亮）。实时数据走 WebSocket，断线自动
+  重连。
+
+运行（安装 fastapi/uvicorn，内嵌引擎随服务启动）：
+
+```bash
+pip install -e ".[web]"
+entropy-arb web --record-only         # 采集模式 + 仪表盘（:8000）
+entropy-arb web                       # 内嵌实盘引擎（真实订单！）
+# 浏览器打开 http://127.0.0.1:8000
+```
+
+机器人若在别的进程运行（docker/systemd），网页仍以文件模式展示：分钟
+K 线、trades.csv 成交、config 阈值——除实时盘口外全部可用。
+
+修改前端：编辑 `frontend/src` 后在 `frontend/` 内 `npm run build`，把
+`frontend/dist/` 复制到 `entropy_arb/webapp/static/`（也可以只用 API，
+SPA 构建产物非必需）。
+
 ## Docker 部署
 
 镜像内不含任何密钥与配置——`config.yaml`、`symbol_map.yaml`、`.env` 都在
@@ -373,6 +402,8 @@ entropy_arb/engine.py    双交易所策略主循环 + 共享 venue 工厂
 entropy_arb/flatten.py   一键清仓（`entropy-arb flatten`）
 entropy_arb/notify.py    Telegram 发送 API — 在需要处调用 notify.send()
 entropy_arb/threshold_check.py  定时阈值漂移巡检（数据 vs config.yaml）
+entropy_arb/webapp/       FastAPI 后端 + React 仪表盘（entropy-arb web）
+frontend/                 Web 仪表盘的 React + TS + Vite 源码
 entropy_arb/dashboard.py Rich 终端仪表盘
 entropy_arb/recorder.py  分钟级盘口数据采集
 entropy_arb/analyze.py    分析器核心 — 亦即 `entropy-arb analyze` / tools/analyze.py
