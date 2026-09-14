@@ -187,14 +187,14 @@ A separate front/back-end web app ships with the bot:
 
 - **Backend** (`entropy_arb/webapp/`, FastAPI): JSON API (`/api/health`,
   `/api/config`, `/api/live`, `/api/trades`, `/api/minutes`,
-  `/api/threshold-suggestion`) plus a `/ws/live` WebSocket pushing a full
-  snapshot every 2s. Read-only by design — no order endpoints, no
-  credential data; the trading path stays in the engine/CLI.
+  `/api/threshold-suggestion`, `/api/flatten/status`) plus a `/ws/live`
+  WebSocket pushing a full snapshot every 2s. No credential data ever
+  leaves the process; the trading path stays in the engine/CLI.
 - **Frontend** (`frontend/`, React 19 + TypeScript + Vite): single-page
-  dashboard — engine mode/HALT/uptime, premium vs band, session PnL and
-  edges, per-venue book/position cards, recent executions, threshold
-  suggestion with drift highlighting. Live updates over the websocket with
-  auto-reconnect.
+  dashboard — engine mode/HALT/PAUSED/uptime, premium vs band, session PnL
+  and edges, per-venue book/position cards, recent executions, threshold
+  suggestion with drift highlighting, and a controls card (see below).
+  Live updates over the websocket with auto-reconnect.
 
 Run it (installs fastapi/uvicorn, starts an in-process engine):
 
@@ -207,7 +207,29 @@ entropy-arb web                       # live engine attached (real orders!)
 
 Without an embedded engine (point the tool at a config while the bot runs
 elsewhere) the dashboard degrades to artifact mode: recorded minute bars,
-trades.csv fills, config thresholds — everything except live books.
+trades.csv fills, config thresholds — everything except live books (and
+the controls, which need the engine in-process).
+
+**Position controls.** With an embedded engine the dashboard can also
+pause the strategy and close positions — both risk-*reducing* operations,
+never risk-opening:
+
+- `POST /api/engine/pause` / `resume` — stop/restart new entries; hedging
+  and reconcile keep running either way. Resume is refused while the
+  engine is HALTED.
+- `POST /api/positions/flatten` — close BOTH legs with reduce-only IOC
+  takers (the same code as `entropy-arb flatten`), retried until flat.
+  The engine stays paused afterwards; re-arm explicitly with resume.
+- Progress (round counter, flat/not-flat) is published in the ws snapshot
+  and `GET /api/flatten/status`.
+
+Controls are **disabled by default**: set `ARB_WEB_TOKEN=<random secret>`
+in `.env` and send `Authorization: Bearer <token>` (the web UI asks for
+it once and stores it in localStorage). Keep the server on 127.0.0.1 or
+behind an authenticated reverse proxy with TLS. If the bot runs in
+another process (docker/systemd), manage positions from that process
+with the CLI — the web app in artifact mode answers 409 on control
+endpoints.
 
 To change the frontend: edit `frontend/src`, `npm run build` inside
 `frontend/`, then copy `frontend/dist/` to `entropy_arb/webapp/static/`

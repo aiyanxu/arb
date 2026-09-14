@@ -166,12 +166,12 @@ upper/lower），任一值与 config.yaml 的偏差超过 `tolerance`（默认 1
 
 - **后端**（`entropy_arb/webapp/`，FastAPI）：JSON API（`/api/health`、
   `/api/config`、`/api/live`、`/api/trades`、`/api/minutes`、
-  `/api/threshold-suggestion`）+ `/ws/live` WebSocket（每 2 秒推送完整
-  快照）。只读设计——没有下单端点、不含任何凭据；交易路径仍在引擎/CLI。
+  `/api/threshold-suggestion`、`/api/flatten/status`）+ `/ws/live`
+  WebSocket（每 2 秒推送完整快照）。不含任何凭据；交易路径仍在引擎/CLI。
 - **前端**（`frontend/`，React 19 + TypeScript + Vite）：单页仪表盘——
-  引擎模式/HALT/运行时长、溢价 vs 带宽、会话盈亏与边际、各腿盘口/持仓
-  卡片、最近成交、阈值建议（漂移高亮）。实时数据走 WebSocket，断线自动
-  重连。
+  引擎模式/HALT/PAUSED/运行时长、溢价 vs 带宽、会话盈亏与边际、各腿
+  盘口/持仓卡片、最近成交、阈值建议（漂移高亮），以及控制面板（见下）。
+  实时数据走 WebSocket，断线自动重连。
 
 运行（安装 fastapi/uvicorn，内嵌引擎随服务启动）：
 
@@ -184,6 +184,21 @@ entropy-arb web                       # 内嵌实盘引擎（真实订单！）
 
 机器人若在别的进程运行（docker/systemd），网页仍以文件模式展示：分钟
 K 线、trades.csv 成交、config 阈值——除实时盘口外全部可用。
+
+**仓位管理**（仅内嵌引擎模式）：只提供"降风险"操作，永不开仓——
+
+- `POST /api/engine/pause` / `resume` —— 暂停/恢复开新仓；对冲与对账
+  始终运行。HALTED 状态下 resume 会被拒绝。
+- `POST /api/positions/flatten` —— 一键平掉两腿真实持仓（reduce-only
+  IOC + 价格保护，与 `entropy-arb flatten` 同一套代码），重复到归零；
+  平仓完成后引擎保持暂停，需手动 resume 恢复。
+- 进度（轮次、是否平完）随 ws 快照与 `GET /api/flatten/status` 发布。
+
+管理端点**默认关闭**：在 `.env` 中设置 `ARB_WEB_TOKEN=<随机密钥>` 启用，
+请求需带 `Authorization: Bearer <token>`（网页会提示输入一次，存于
+localStorage）。服务只建议绑定 127.0.0.1，或放在带认证的 TLS 反代之后。
+机器人若在别的进程（docker/systemd），请在该进程内用 CLI 管理仓位——
+文件模式下网页的管理端点返回 409。
 
 修改前端：编辑 `frontend/src` 后在 `frontend/` 内 `npm run build`，把
 `frontend/dist/` 复制到 `entropy_arb/webapp/static/`（也可以只用 API，

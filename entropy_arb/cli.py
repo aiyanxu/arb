@@ -166,10 +166,14 @@ def main() -> None:
             prog="entropy-arb web",
             description="web dashboard: FastAPI backend + built React "
                         "frontend, with an in-process engine (real orders "
-                        "unless --record-only). Read-only control plane: "
-                        "the server itself never sends orders. / Web 仪表盘："
-                        "FastAPI 后端 + React 前端，内嵌引擎实时展示状态；"
-                        "网页服务本身不下单。")
+                        "unless --record-only). Read-only until "
+                        "ARB_WEB_TOKEN is set in the env file — then "
+                        "pause/resume/flatten are enabled under Bearer "
+                        "auth; the server never opens positions (flatten "
+                        "is reduce-only). / Web 仪表盘：FastAPI 后端 + "
+                        "React 前端，内嵌引擎实时展示状态；设置 "
+                        "ARB_WEB_TOKEN 后可暂停/恢复/一键平仓（只降风险，"
+                        "不下开仓单）。")
         p.add_argument("--host", default="127.0.0.1",
                        help="bind address (default: 127.0.0.1)")
         p.add_argument("--port", type=int, default=8000,
