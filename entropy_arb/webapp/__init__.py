@@ -2,19 +2,26 @@
 
 Serves the built React app (frontend/ -> webapp/static) and a JSON API:
 live state, recent trades, minute bars, and the analyzer's threshold
-suggestion. Read-only by design: no order endpoints, no credential data —
-the trading path stays in the engine/CLI.
+suggestion. Risk-reducing control endpoints (pause / resume / flatten the
+embedded engine) exist but are DISABLED until ARB_WEB_TOKEN is set in the
+env file — requests then must carry `Authorization: Bearer <token>`. No
+endpoint can open a position: flatten is reduce-only, pause/resume only
+gate the strategy loop. Credential data never leaves the process.
 
 Data sources:
   * an Engine running in-process (`entropy-arb web` starts one) — live
     books/positions/PnL straight from the objects
   * otherwise read-only artifacts: logs/minutes.duckdb (recorder bars),
     logs/trades.csv (fills), config.yaml (thresholds) — the dashboard still
-    works while the bot runs in another process (docker/systemd).
+    works while the bot runs in another process (docker/systemd). Control
+    endpoints return 409 in this mode: an engine in another process can
+    only be driven by its own process (use the CLI).
 
 前后端分离的后端：FastAPI 提供 REST + 一个 WebSocket 实时推送，并托管
 frontend/ 构建出的静态页面。既可内嵌引擎（`entropy-arb web` 启动）也可
 纯文件模式（读取 duckdb/csv/config，适合 bot 在别的进程运行的场景）。
+管理端点（暂停/恢复/平仓）默认关闭：在环境文件里设置 ARB_WEB_TOKEN
+后以 Bearer token 启用；任何端点都不能开仓，平仓只发 reduce-only 单。
 """
 from __future__ import annotations
 
@@ -22,9 +29,12 @@ import asyncio
 import csv
 import logging
 import os
+import secrets
 import time
+from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, \
+    WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -36,6 +46,44 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "static")
 
 WS_INTERVAL_SEC = 2.0
+
+
+def web_token(env_file: str = ".env") -> Optional[str]:
+    """The control-endpoint token from the environment, or None (disabled).
+
+    Read lazily per request via the loaded dotenv state, so tests can set
+    os.environ directly and long-running servers pick up .env edits only
+    on restart (load_dotenv does not override already-set vars).
+    """
+    tok = os.getenv("ARB_WEB_TOKEN")
+    return tok.strip() if tok not in (None, "") else None
+
+
+def require_token(req: Request) -> None:
+    """Bearer-token gate for POST control endpoints (403 when unset/wrong)."""
+    tok = web_token()
+    if not tok:
+        raise HTTPException(
+            403, "control endpoints disabled — set ARB_WEB_TOKEN in the env "
+                 "file to enable / 管理接口未启用：请在环境文件中设置 "
+                 "ARB_WEB_TOKEN")
+    auth = req.headers.get("authorization", "")
+    supplied = auth[7:] if auth.lower().startswith("bearer ") else ""
+    if not supplied or not secrets.compare_digest(supplied, tok):
+        raise HTTPException(403, "invalid or missing bearer token")
+
+
+def require_engine(req: Request):
+    """The in-process engine, or 409 — cross-process control is not
+    supported (drive an engine in another process via the CLI)."""
+    eng = req.app.state.engine
+    if eng is None or getattr(eng, "base", None) is None:
+        raise HTTPException(
+            409, "no engine in this process — management needs `entropy-arb "
+                 "web` (an engine running elsewhere can only be driven by "
+                 "its own process, e.g. the flatten CLI) / 管理功能需要 "
+                 "entropy-arb web 内嵌引擎")
+    return eng
 
 
 def csv_trades(path: str, limit: int) -> list:
@@ -91,6 +139,8 @@ def engine_snapshot(eng, cfg) -> dict:
             "running": not eng.stop.is_set(),
             "record_only": eng.record_only,
             "halted": eng.halted,
+            "paused": eng.paused,
+            "flatten_in_progress": eng.flatten_in_progress,
             "trades": eng.trades, "hedges": eng.hedges,
             "exp_edge_usd": eng.total_exp_edge,
             "fill_edge_usd": eng.total_fill_edge,
@@ -104,6 +154,7 @@ def engine_snapshot(eng, cfg) -> dict:
         "venues": [venue_view(v, cfg.staleness_sec)
                    for v in eng.venues.values()],
         "trades": list(eng.recent_trades)[-20:],
+        "flatten_state": eng.flatten_state,
         "ts": time.time(),
     }
 
@@ -123,8 +174,17 @@ def make_app(cfg: Config, engine=None) -> FastAPI:
     web.state.engine = engine
     web.state.cfg = cfg
     web.add_middleware(
-        CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
-        allow_headers=["*"])
+        CORSMiddleware,
+        # same-origin deployment + the vite dev server; the wildcard invited
+        # any page the operator browses to read the (tokenless) API
+        allow_origin_regex=r"https?://(127\.0\.0\.1|localhost)"
+                           r"(:\d+)?",
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"])
+
+    # in-flight webapp flatten task, so /api/positions/flatten can 409 on a
+    # double click instead of stacking flatten rounds
+    web.state.flatten_task = None
 
     # embedded engine lifecycle: run alongside the server so the dashboard
     # shows live books/positions; SIGINT/SIGTERM stop it cleanly
@@ -137,9 +197,16 @@ def make_app(cfg: Config, engine=None) -> FastAPI:
         @web.on_event("shutdown")
         async def _stop_engine():
             engine.request_stop()
+            t = getattr(web.state, "flatten_task", None)
+            if t is not None:
+                t.cancel()
             t = getattr(web.state, "engine_task", None)
             if t is not None:
                 t.cancel()
+
+    def _authed(req: Request):
+        require_token(req)
+        return require_engine(req)
 
     # ------------------------------------------------------------- routes
 
@@ -226,6 +293,52 @@ def make_app(cfg: Config, engine=None) -> FastAPI:
         return {"rows": [{"ts": r["ts"], "prem": r["prem"],
                           "sell_max": r["sell_max"], "buy_max": r["buy_max"]}
                          for r in rows[-limit:]]}
+
+    # -------------------------------------------------- control (POST)
+
+    @web.post("/api/engine/pause")
+    async def engine_pause(req: Request):
+        """Stop opening new positions (hedging + reconcile keep running)."""
+        eng = _authed(req)
+        eng.request_pause()
+        return {"ok": True, "paused": True}
+
+    @web.post("/api/engine/resume")
+    async def engine_resume(req: Request):
+        """Resume the strategy loop (refused while the engine is halted)."""
+        eng = _authed(req)
+        if not eng.request_resume():
+            raise HTTPException(409, "engine is HALTED — resume refused; "
+                                     "flatten and restart")
+        return {"ok": True, "paused": False}
+
+    @web.post("/api/positions/flatten")
+    async def positions_flatten(req: Request):
+        """Close BOTH legs' positions (reduce-only, like `entropy-arb
+        flatten`). Runs in the background; poll /api/flatten/status or the
+        ws snapshot for progress. Stays paused afterwards."""
+        eng = _authed(req)
+        if web.state.flatten_task is not None and \
+                not web.state.flatten_task.done():
+            raise HTTPException(409, "flatten already running")
+        if getattr(eng, "record_only", False):
+            raise HTTPException(409, "record-only session holds no "
+                                     "credentials — nothing to flatten")
+        web.state.flatten_task = asyncio.create_task(eng.flatten_all(),
+                                                     name="web-flatten")
+        return {"ok": True, "started": True}
+
+    @web.get("/api/flatten/status")
+    async def flatten_status():
+        """Progress of the webapp-driven flatten (no auth: state only,
+        mirrors what /ws/live already publishes)."""
+        t = web.state.flatten_task
+        state = {"running": bool(t is not None and not t.done()),
+                 "state": getattr(web.state.engine, "flatten_state", None)
+                 if web.state.engine is not None else None}
+        if t is not None and t.done() and not t.cancelled():
+            state["flat"] = t.result()
+        return state
 
     # ------------------------------------------------------- websocket
 

@@ -56,6 +56,9 @@ class StubEngine:
         self.stop = asyncio.Event()
         self.record_only = True
         self.halted = False
+        self.paused = False
+        self.flatten_in_progress = False
+        self.flatten_state = None
         self.trades, self.hedges = 2, 1
         self.total_exp_edge, self.total_fill_edge = 0.5, 0.42
         self.start_ts = asyncio.get_event_loop().time() if False else 0.0
@@ -72,6 +75,20 @@ class StubEngine:
 
     def request_stop(self):
         self.stop.set()
+
+    def request_pause(self):
+        self.paused = True
+
+    def request_resume(self):
+        if self.halted:
+            return False
+        self.paused = False
+        return True
+
+    async def flatten_all(self):
+        self.flatten_state = {"running": False, "rounds": 1,
+                              "result": "flat"}
+        return True
 
     async def run(self):
         await asyncio.Event().wait()
@@ -131,6 +148,111 @@ def test_static_frontend_served():
         r = client.get("/")
         assert r.status_code == 200
         assert b"html" in r.content[:200].lower() or b"entropy" in r.content
+
+
+# ------------------------------------------------------------ control API
+
+import pytest  # noqa: E402
+
+
+def test_control_disabled_without_token():
+    eng = StubEngine()
+    with TestClient(make_app(make_cfg(), engine=eng)) as c:
+        r = c.post("/api/engine/pause")
+        assert r.status_code == 403
+        assert "ARB_WEB_TOKEN" in r.json()["detail"]
+        r = c.post("/api/positions/flatten")
+        assert r.status_code == 403
+        assert eng.paused is False    # nothing happened
+
+
+def test_control_auth_rejects_wrong_token():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        eng = StubEngine()
+        with TestClient(make_app(make_cfg(), engine=eng)) as c:
+            assert c.post("/api/engine/pause").status_code == 403
+            assert c.post("/api/engine/pause",
+                          headers={"Authorization": "Bearer wrong"}
+                          ).status_code == 403
+            assert eng.paused is False
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_pause_resume_with_token():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        eng = StubEngine()
+        with TestClient(make_app(make_cfg(), engine=eng)) as c:
+            auth = {"Authorization": "Bearer sekrit"}
+            r = c.post("/api/engine/pause", headers=auth)
+            assert r.status_code == 200 and r.json()["paused"] is True
+            assert eng.paused is True
+            r = c.post("/api/engine/resume", headers=auth)
+            assert r.status_code == 200 and r.json()["paused"] is False
+            # snapshot carries the new state
+            snap = c.get("/api/live").json()
+            assert snap["engine"]["paused"] is False
+            # halted engine: resume -> 409
+            eng.halted = True
+            eng.paused = True
+            r = c.post("/api/engine/resume", headers=auth)
+            assert r.status_code == 409
+            assert eng.paused is True
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_flatten_endpoint_lifecycle():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        eng = StubEngine()
+        eng.record_only = False     # a live engine
+        with TestClient(make_app(make_cfg(), engine=eng)) as c:
+            auth = {"Authorization": "Bearer sekrit"}
+            r = c.post("/api/positions/flatten", headers=auth)
+            assert r.status_code == 200
+            status = c.get("/api/flatten/status").json()
+            assert status["flat"] is True
+            assert status["state"]["result"] == "flat"
+            # snapshot publishes the state too
+            snap = c.get("/api/live").json()
+            assert snap["flatten_state"]["result"] == "flat"
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_flatten_refused_record_only():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        eng = StubEngine()          # record_only=True by default
+        with TestClient(make_app(make_cfg(), engine=eng)) as c:
+            r = c.post("/api/positions/flatten",
+                       headers={"Authorization": "Bearer sekrit"})
+            assert r.status_code == 409
+            assert "record-only" in r.json()["detail"]
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_control_needs_engine_artifact_mode():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        with TestClient(make_app(make_cfg(), engine=None)) as c:
+            for path in ("/api/engine/pause", "/api/engine/resume",
+                         "/api/positions/flatten"):
+                r = c.post(path, headers={"Authorization": "Bearer sekrit"})
+                assert r.status_code == 409, path
+                assert "no engine" in r.json()["detail"]
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_flatten_status_without_engine():
+    with TestClient(make_app(make_cfg(), engine=None)) as c:
+        body = c.get("/api/flatten/status").json()
+        assert body == {"running": False, "state": None}
 
 
 if __name__ == "__main__":
