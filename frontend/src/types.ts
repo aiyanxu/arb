@@ -23,6 +23,8 @@ export interface EngineState {
   running: boolean
   record_only: boolean
   halted: boolean
+  paused: boolean
+  flatten_in_progress: boolean
   trades: number
   hedges: number
   exp_edge_usd: number
@@ -32,6 +34,13 @@ export interface EngineState {
   premium_bps: number | null
   band: [number, number]
   midline_bps: number
+}
+
+export interface FlattenState {
+  running: boolean
+  rounds: number
+  result: 'flat' | 'not_flat' | 'error' | null
+  error?: string
 }
 
 export interface Trade {
@@ -54,6 +63,7 @@ export interface Snapshot {
   engine: EngineState | null
   venues: VenueLeg[]
   trades: Trade[]
+  flatten_state: FlattenState | null
   ts: number
 }
 

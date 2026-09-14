@@ -1,7 +1,35 @@
 // entropy-arb dashboard — live state via /ws/live, artifact data via REST.
+// Control endpoints (pause/resume/flatten) are token-gated server-side:
+// ARB_WEB_TOKEN in the env file enables them; the token lives in
+// localStorage and is sent as a Bearer header.
 import { useEffect, useState } from 'react'
 import { useLive } from './useLive'
-import type { Suggestion, VenueLeg } from './types'
+import type { FlattenState, Suggestion, VenueLeg } from './types'
+
+const TOKEN_KEY = 'arb.web.token'
+
+function getToken(): string {
+  return localStorage.getItem(TOKEN_KEY) ?? ''
+}
+
+async function control(path: string): Promise<{ ok: boolean; status: number; detail?: string }> {
+  const token = getToken()
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (r.ok) return { ok: true, status: r.status }
+    let detail = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      if (typeof body.detail === 'string') detail = body.detail
+    } catch { /* non-json error body */ }
+    return { ok: false, status: r.status, detail }
+  } catch (e) {
+    return { ok: false, status: 0, detail: String(e) }
+  }
+}
 
 function num(v: number | null | undefined, digits = 2): string {
   if (v === null || v === undefined || Number.isNaN(v)) return '—'
@@ -46,8 +74,104 @@ function Stat({ label, value, cls }: {
   )
 }
 
+function FlattenBanner({ state }: { state: FlattenState }) {
+  if (state.running) {
+    return (
+      <div className="banner warn">
+        flatten running — round {state.rounds}…
+      </div>
+    )
+  }
+  if (state.result === 'flat') {
+    return <div className="banner ok">both legs flat ✓ (engine stays paused)</div>
+  }
+  if (state.result === 'not_flat') {
+    return (
+      <div className="banner bad">
+        not flat after retries — check positions on each venue's web UI
+      </div>
+    )
+  }
+  if (state.result === 'error') {
+    return <div className="banner bad">flatten failed: {state.error ?? 'unknown'}</div>
+  }
+  return null
+}
+
+function Controls({ eng, flatten, onMsg }: {
+  eng: { paused: boolean; flatten_in_progress: boolean; record_only: boolean }
+  flatten: FlattenState | null
+  onMsg: (m: string) => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const act = async (path: string, msg: string) => {
+    setBusy(true)
+    const r = await control(path)
+    setBusy(false)
+    if (!r.ok) onMsg(`✗ ${msg}: ${r.detail}`)
+    else onMsg(`✓ ${msg}`)
+    if (r.ok && path.includes('flatten')) setConfirming(false)
+  }
+
+  const flattening = eng.flatten_in_progress ||
+    (flatten?.running ?? false)
+
+  return (
+    <section className="card controls">
+      <div className="card-title">controls</div>
+      <div className="controls-row">
+        {eng.paused ? (
+          <button disabled={eng.flatten_in_progress} onClick={() => act('/api/engine/resume', 'resumed')}>
+            ▶ resume
+          </button>
+        ) : (
+          <button disabled={eng.flatten_in_progress} onClick={() => act('/api/engine/pause', 'paused')}>
+            ⏸ pause
+          </button>
+        )}
+        <button className="danger" disabled={flattening || eng.record_only}
+          onClick={() => { setConfirming(true); setConfirmText('') }}>
+          flatten both legs
+        </button>
+        {eng.record_only && <span className="muted">record-only — no credentials, nothing to flatten</span>}
+      </div>
+
+      {flatten && <FlattenBanner state={flatten} />}
+
+      {confirming && (
+        <div className="modal-backdrop" onClick={() => setConfirming(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="card-title">close BOTH legs' positions?</div>
+            <p className="muted">
+              Sends reduce-only IOC takers on both venues until flat
+              (same as <code>entropy-arb flatten</code>). The engine stays
+              paused afterwards. Type <b>FLATTEN</b> to confirm.
+            </p>
+            <input
+              autoFocus value={confirmText}
+              onChange={e => setConfirmText(e.target.value)}
+              placeholder="FLATTEN"
+            />
+            <div className="controls-row">
+              <button disabled={confirmText !== 'FLATTEN' || busy}
+                onClick={() => act('/api/positions/flatten', 'flatten started')}>
+                confirm flatten
+              </button>
+              <button onClick={() => setConfirming(false)}>cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function App() {
   const [sug, setSug] = useState<Suggestion | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
   const { snap: live, connected } = useLive()
 
   useEffect(() => {
@@ -65,7 +189,7 @@ export default function App() {
         <h1>
           entropy-arb <span className="sym">{live?.symbol ?? '…'}</span>
           <span className={`badge ${connected ? 'ok' : 'off'}`}>
-            {live ? (eng?.halted ? 'HALTED' : live.mode) : 'offline'}
+            {live ? (eng?.halted ? 'HALTED' : eng?.paused ? 'PAUSED' : live.mode) : 'offline'}
           </span>
         </h1>
         <span className={`badge ${live ? 'ok' : 'off'}`}>
@@ -73,10 +197,18 @@ export default function App() {
         </span>
       </header>
 
+      {msg && (
+        <div className={`banner ${msg.startsWith('✗') ? 'bad' : 'ok'}`}
+          onClick={() => setMsg(null)}>
+          {msg}
+        </div>
+      )}
+
       {eng === null ? (
         <p className="muted">
           No engine running in this process — showing recorded data only.
           Start the bot (`entropy-arb web`) or check the API endpoints.
+          Position controls (pause / flatten) need an embedded engine.
         </p>
       ) : (
         <>
@@ -102,6 +234,10 @@ export default function App() {
               value={eng.record_only ? 'RECORD-ONLY' : 'LIVE TRADING'}
               cls={eng.record_only ? '' : 'warn'} />
           </section>
+
+          {live && (
+            <Controls eng={eng} flatten={live.flatten_state} onMsg={setMsg} />
+          )}
         </>
       )}
 
