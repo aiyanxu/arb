@@ -160,6 +160,124 @@ def test_scan_respects_position_caps():
     assert run_scan(eng) is None
 
 
+# --------------------------------------------------------- pause / flatten
+
+def test_pause_blocks_evaluate_and_resume():
+    eng = make_engine(midline=0.0, upper=1.0, lower=1.0)
+    eng.base.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    # without pause the direction arms (persist sec is 0)
+    assert run_scan(eng) is not None
+    eng2 = make_engine(midline=0.0, upper=1.0, lower=1.0)
+    eng2.base.set_book(100.14, 100.16)
+    eng2.hedge.set_book(99.99, 100.01)
+    eng2.request_pause()
+    assert eng2.paused is True
+    # _evaluate returns immediately when paused: nothing armed, no task
+    asyncio.run(eng2._evaluate())
+    assert eng2._armed == {"sell_base": None, "buy_base": None}
+    assert eng2._exec_tasks == set()
+    # resume re-enables evaluation and returns True
+    assert eng2.request_resume() is True
+    assert eng2.paused is False
+    assert run_scan(eng2) is not None
+
+
+def test_resume_refused_while_halted():
+    eng = make_engine()
+    eng.request_pause()
+    eng.halted = True
+    assert eng.request_resume() is False
+    assert eng.paused is True   # unchanged
+    eng.halted = False
+    assert eng.request_resume() is True
+
+
+class FlattenableVenue(StubVenue):
+    """StubVenue with the fetch/send surface flatten_positions drives."""
+
+    def __init__(self, key, label, position):
+        super().__init__(key, label)
+        self.position = position
+        self.sent = []
+        self.set_book(100.0, 100.02)
+
+    def px_round(self, px: float, round_up: bool) -> float:
+        return round(px, 4)
+
+    async def fetch_position(self):
+        # each reduce-only IOC fully fills against the fresh stub book
+        return 0.0 if self.sent else self.position
+
+    async def send_taker(self, *, is_buy, qty, limit_px, reduce_only=False):
+        self.sent.append((is_buy, qty, limit_px, reduce_only))
+        assert reduce_only, "flatten must never send an opening order"
+        self.position += qty if is_buy else -qty
+        return {"status": "finished", "filled_base": qty, "avg_px": limit_px,
+                "unresolved": False}
+
+
+def test_flatten_all_closes_both_legs():
+    eng = make_engine(midline=0.0, upper=1.0, lower=1.0)
+    eng.base = FlattenableVenue("base", "ENTROPY", position=0.5)
+    eng.hedge = FlattenableVenue("hedge", "RH", position=-0.3)
+    eng.venues = {"base": eng.base, "hedge": eng.hedge}
+    eng.markets_ready = True
+
+    async def go():
+        ok = await eng.flatten_all()
+        return ok
+
+    ok = asyncio.run(go())
+    assert ok is True
+    assert eng.paused is True            # stays paused after flattening
+    assert eng.flatten_in_progress is False
+    assert eng.flatten_state["result"] == "flat"
+    # base was long 0.5 -> SELL (is_buy False), hedge short -0.3 -> BUY
+    assert [(i, round(q, 6)) for i, q, _, _ in eng.base.sent] == [(False, 0.5)]
+    assert [(i, round(q, 6)) for i, q, _, _ in eng.hedge.sent] == [(True, 0.3)]
+    # venue locks released afterwards
+    assert not eng._vlock("base").locked()
+    assert not eng._vlock("hedge").locked()
+
+
+def test_flatten_all_refuses_record_only():
+    eng = make_engine()
+    eng.record_only = True
+    assert asyncio.run(eng.flatten_all()) is False
+    assert eng.flatten_state["result"] == "error"
+    assert "record-only" in eng.flatten_state["error"]
+
+
+def test_flatten_all_waits_for_inflight_execution():
+    eng = make_engine()
+    eng.base = FlattenableVenue("base", "ENTROPY", position=0.5)
+    eng.hedge = FlattenableVenue("hedge", "RH", position=-0.3)
+    eng.venues = {"base": eng.base, "hedge": eng.hedge}
+    eng.markets_ready = True
+
+    async def go():
+        blocker = asyncio.Event()
+        done = asyncio.Event()
+
+        async def fake_exec():
+            await blocker.wait()
+
+        t = asyncio.create_task(fake_exec())
+        eng._exec_tasks.add(t)
+        task = asyncio.create_task(eng.flatten_all())
+        await asyncio.sleep(0.05)          # flatten_all is now waiting on it
+        assert eng.flatten_in_progress is True
+        assert eng.paused is True
+        blocker.set()                      # the execution settles
+        ok = await asyncio.wait_for(task, 5)
+        t.cancel()
+        assert ok is True
+        assert eng.flatten_state["result"] == "flat"
+
+    asyncio.run(go())
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

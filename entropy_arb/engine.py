@@ -17,6 +17,7 @@ Both venues' books are recorded to 1-minute DuckDB bars throughout.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import logging
 import os
@@ -81,6 +82,14 @@ class Engine:
         self._venue_locks: Dict[str, asyncio.Lock] = {}
         self._exec_tasks: set = set()
         self.halted = False
+        # webapp-initiated pause: stops NEW entries only — reconcile and
+        # net-delta hedging (the safety nets) keep running. Reversible,
+        # unlike halted.
+        self.paused = False
+        # flatten-in-progress bookkeeping for the webapp (None = never run);
+        # written by flatten_all(), read by /api/flatten/status and /ws/live
+        self.flatten_state: Optional[dict] = None
+        self.flatten_in_progress = False
         self.consec_errors = 0
         self.last_trade_ts = 0.0
         self.trades = 0
@@ -140,6 +149,24 @@ class Engine:
         self.stop.set()
         self._update_evt.set()
         self._reconcile_evt.set()
+
+    def request_pause(self) -> None:
+        """Stop opening new positions (idempotent; reconcile/hedge continue)."""
+        self.paused = True
+        log.warning("paused via control API — no new entries; hedging and "
+                    "reconcile continue / 已暂停开仓，对冲与对账照常")
+
+    def request_resume(self) -> bool:
+        """Clear the pause. Returns False (and does nothing) when halted —
+        a halted engine only unhalts via a manual restart."""
+        if self.halted:
+            log.warning("resume ignored — engine is HALTED; flatten and "
+                        "restart / 引擎已停机，resume 无效")
+            return False
+        self.paused = False
+        self._update_evt.set()  # a queued opportunity can fire immediately
+        log.info("resumed via control API / 已恢复策略")
+        return True
 
     # ------------------------------------------------------------- lifecycle
 
@@ -347,7 +374,7 @@ class Engine:
 
     async def _evaluate(self) -> None:
         cfg = self.cfg
-        if self.halted:
+        if self.halted or self.paused:
             return
         now = time.time()
         if now - self.last_trade_ts < cfg.cooldown_sec:
@@ -533,6 +560,81 @@ class Engine:
                       binfo["status"], sinfo["status"], fill_edge, inv_bps)
         self.last_trade_ts = time.time()
         return bool(unresolved)
+
+    # ------------------------------------------------------------ web flatten
+
+    async def flatten_all(self) -> bool:
+        """Webapp-driven close of BOTH legs (the `flatten` subcommand, run
+        inside the live engine). Pauses new entries first, waits out any
+        in-flight execution, then drives both venues flat under both venue
+        locks (reconcile/hedge queue behind them — no race). Stays paused
+        afterwards: re-arming is an explicit act.
+
+        Runs as a background task; progress lands in self.flatten_state
+        (surfaced by /api/flatten/status and the /ws/live snapshot).
+        Returns True when both legs are flat.
+        """
+        if self.record_only:
+            self.flatten_state = {"running": False, "rounds": 0,
+                                  "result": "error",
+                                  "error": "record-only session has no "
+                                           "credentials — nothing to flatten"}
+            return False
+        if self.flatten_in_progress:
+            return True  # already running; caller just sees state update
+        if self.base is None or self.hedge is None or not self.markets_ready:
+            self.flatten_state = {"running": False, "rounds": 0,
+                                  "result": "error",
+                                  "error": "engine still starting — markets "
+                                           "not resolved yet"}
+            return False
+        self.flatten_in_progress = True
+        self.request_pause()
+        self.flatten_state = {"running": True, "rounds": 0, "result": None}
+        try:
+            if self._exec_tasks:  # let in-flight executions settle first
+                log.info("flatten: waiting for %d in-flight execution(s)",
+                         len(self._exec_tasks))
+                await asyncio.wait(set(self._exec_tasks),
+                                   timeout=self.cfg.settle_timeout_sec + 2.0)
+                if any(not t.done() for t in self._exec_tasks):
+                    self.flatten_state = {
+                        "running": False, "rounds": 0, "result": "error",
+                        "error": "executions still in flight — retry shortly"}
+                    return False
+            async with contextlib.AsyncExitStack() as stack:
+                for v in (self.base, self.hedge):
+                    await stack.enter_async_context(self._vlock(v.key))
+                # flatten_positions re-reads each venue's real position, then
+                # sends reduce-only IOC takers against its live book until
+                # flat — exactly the CLI path, on the same venue objects
+                from .flatten import flatten_positions
+
+                def _on_round(n: int) -> None:
+                    if self.flatten_state is not None:
+                        self.flatten_state["rounds"] = n
+
+                ok = await flatten_positions(self.base, self.hedge, self.cfg,
+                                             on_round=_on_round)
+            self.flatten_state = {
+                "running": False,
+                "rounds": self.flatten_state.get("rounds", 0),
+                "result": "flat" if ok else "not_flat"}
+            log.info("flatten via web: %s",
+                     "both venues flat" if ok else "NOT flat after retries "
+                     "— check on the venue web UIs")
+            return ok
+        except asyncio.CancelledError:
+            self.flatten_state = {"running": False, "rounds": 0,
+                                  "result": "error", "error": "cancelled"}
+            raise
+        except Exception as e:
+            log.exception("flatten failed")
+            self.flatten_state = {"running": False, "rounds": 0,
+                                  "result": "error", "error": repr(e)}
+            return False
+        finally:
+            self.flatten_in_progress = False
 
     def _record_trade(self, direction: str, plan: ArbPlan, fill_edge,
                       status: str, ok: bool) -> None:

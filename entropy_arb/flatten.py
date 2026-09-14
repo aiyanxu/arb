@@ -40,13 +40,15 @@ MAX_ROUNDS = 5
 DUST_FRAC = 0.5
 
 
-async def flatten_positions(base, hedge, cfg) -> bool:
+async def flatten_positions(base, hedge, cfg, on_round=None) -> bool:
     """Drive both venues to flat. Returns True when both legs are flat.
 
     Either leg may already be flat. Each round: refresh positions from the
     venue, then (with the book fresh) cross the touch with a reduce-only
     IOC bound by hedge_slippage_bps around it. The caller holds no other
-    engine tasks, so there is nothing to race the orders.
+    engine tasks, so there is nothing to race the orders. `on_round(n)`,
+    when given, is called after each round (1-based) — the webapp's
+    flatten_all uses it to surface progress.
     """
     slip = cfg.hedge_slippage_bps / 1e4
     for round_no in range(1, MAX_ROUNDS + 1):
@@ -87,6 +89,11 @@ async def flatten_positions(base, hedge, cfg) -> bool:
                          fill, qty)
         if flat:
             return True
+        if on_round is not None:
+            try:
+                on_round(round_no)
+            except Exception:
+                pass  # progress reporting must never break the flatten
         if round_no < MAX_ROUNDS:
             await asyncio.sleep(1.0)   # let ws settlements settle before re-read
     return False
