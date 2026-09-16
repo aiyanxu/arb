@@ -32,8 +32,10 @@ export interface EngineState {
   uptime_sec: number
   pnl: number | null
   premium_bps: number | null
-  band: [number, number]
-  midline_bps: number
+  // [null, null] with no embedded engine — the UI indexes both slots
+  // unconditionally, so the backend must always send two of them.
+  band: [number | null, number | null]
+  midline_bps: number | null
 }
 
 export interface FlattenState {

@@ -128,7 +128,12 @@ def venue_view(v, staleness_sec: float) -> dict:
 
 
 def engine_snapshot(eng, cfg) -> dict:
-    """Everything the dashboard shows for a live in-process engine."""
+    """Everything the dashboard shows for a live in-process engine.
+
+    pnl / premium_bps / band / midline_bps belong to the engine object, not
+    the snapshot root — the built React app reads them as `snap.engine.*`
+    (frontend/src/types.ts EngineState). Keep the two in sync.
+    """
     pnl = eng.session_pnl()
     return {
         "mode": "live",
@@ -145,12 +150,12 @@ def engine_snapshot(eng, cfg) -> dict:
             "exp_edge_usd": eng.total_exp_edge,
             "fill_edge_usd": eng.total_fill_edge,
             "uptime_sec": time.time() - eng.start_ts,
+            "pnl": pnl,
+            "premium_bps": eng.premium_bps(),
+            "band": [cfg.midline_bps - cfg.lower_bps,
+                     cfg.midline_bps + cfg.upper_bps],
+            "midline_bps": cfg.midline_bps,
         },
-        "pnl": pnl,
-        "premium_bps": eng.premium_bps(),
-        "band": [cfg.midline_bps - cfg.lower_bps,
-                 cfg.midline_bps + cfg.upper_bps],
-        "midline_bps": cfg.midline_bps,
         "venues": [venue_view(v, cfg.staleness_sec)
                    for v in eng.venues.values()],
         "trades": list(eng.recent_trades)[-20:],
@@ -236,7 +241,17 @@ def make_app(cfg: Config, engine=None) -> FastAPI:
     async def live_view():
         snap = snapshot(cfg, web.state.engine)
         if snap["engine"] is None:
-            snap["engine"] = {"running": False, "record_only": None}
+            # artifact mode: a truthy stub so the dashboard still renders its
+            # stats row. Every field the frontend reads must exist (null =
+            # "—"), or React throws on the first undefined.
+            snap["engine"] = {
+                "running": False, "record_only": None, "halted": False,
+                "paused": False, "flatten_in_progress": False,
+                "trades": 0, "hedges": 0, "exp_edge_usd": 0.0,
+                "fill_edge_usd": 0.0, "uptime_sec": 0.0,
+                "pnl": None, "premium_bps": None, "band": [None, None],
+                "midline_bps": None,
+            }
         return snap
 
     @web.get("/api/trades")

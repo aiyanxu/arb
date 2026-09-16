@@ -116,6 +116,44 @@ def test_live_with_engine():
         assert snap["symbol"] == "SNDK"
 
 
+# Fields frontend/src/types.ts EngineState declares. The built React app reads
+# every one of them under snap.engine; an absent key renders as `undefined`
+# and throws on first index (e.g. band[1]) — which is what the dashboard's
+# "Cannot read properties of undefined (reading '1')" crash was. Keep in sync.
+ENGINE_STATE_FIELDS = {
+    "running", "record_only", "halted", "paused", "flatten_in_progress",
+    "trades", "hedges", "exp_edge_usd", "fill_edge_usd", "uptime_sec",
+    "pnl", "premium_bps", "band", "midline_bps",
+}
+
+
+def test_live_engine_has_every_frontend_field():
+    """Engine mode: snap.engine must carry all of EngineState, in-place."""
+    eng = StubEngine()
+    with TestClient(make_app(make_cfg(), engine=eng)) as client:
+        eng_state = client.get("/api/live").json()["engine"]
+    assert ENGINE_STATE_FIELDS <= set(eng_state), \
+        f"missing: {ENGINE_STATE_FIELDS - set(eng_state)}"
+    # the four stat fields are engine-scoped now, not snapshot-root
+    assert eng_state["premium_bps"] == 11.0
+    assert eng_state["pnl"] == 12.34
+    assert eng_state["band"][0] == 1.0 and eng_state["band"][1] == 9.0
+    assert eng_state["midline_bps"] == 5.0
+
+
+def test_live_artifact_mode_has_every_frontend_field():
+    """Artifact mode (no engine): the stub must still satisfy EngineState —
+    the dashboard renders this path and would crash on a short dict."""
+    with TestClient(make_app(make_cfg(), engine=None)) as client:
+        eng_state = client.get("/api/live").json()["engine"]
+    assert ENGINE_STATE_FIELDS <= set(eng_state), \
+        f"missing: {ENGINE_STATE_FIELDS - set(eng_state)}"
+    # band is indexed unconditionally by the UI, so it needs two slots even
+    # with no engine (nulls render as "—" and skip the cls comparison)
+    assert eng_state["band"] == [None, None]
+    assert eng_state["premium_bps"] is None and eng_state["pnl"] is None
+
+
 def test_trades_csv_fallback():
     import tempfile
     csv_path = os.path.join(tempfile.mkdtemp(), "trades.csv")

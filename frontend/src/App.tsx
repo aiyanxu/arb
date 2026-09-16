@@ -213,7 +213,8 @@ export default function App() {
       ) : (
         <>
           <section className="stats">
-            <Stat label="premium" cls={eng.premium_bps === null ? '' :
+            <Stat label="premium" cls={eng.premium_bps === null ||
+              eng.band[0] === null || eng.band[1] === null ? '' :
               eng.premium_bps > eng.band[1] ? 'up' :
                 eng.premium_bps < eng.band[0] ? 'down' : ''}
               value={eng.premium_bps === null ? '—'
