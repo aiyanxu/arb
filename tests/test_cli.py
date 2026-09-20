@@ -130,6 +130,125 @@ def test_config_content_drives_engine_config(monkeypatch):
         assert seen["cfg"].hedge_venue == "lighter-rh"
 
 
+def test_pid_file_path_layout():
+    from entropy_arb.cli import pid_file_path
+    assert pid_file_path("SNDK", "entropy", "lighter-rh") == \
+        "/tmp/entropy-arb-SNDK-entropy-lighter-rh.pid"
+
+
+def test_live_run_writes_and_cleans_pid_file(monkeypatch):
+    # a live (no --record-only) run writes /tmp/entropy-arb-<pair>.pid on
+    # startup and removes it on exit; --record-only never writes one
+    from entropy_arb import cli
+    from entropy_arb.cli import pid_file_path
+
+    symbol, base, hedge = "entropy-arb-pidfile-test", "entropy", "lighter-rh"
+    path = pid_file_path(symbol, base, hedge)
+    seen = {}
+
+    class FakeEngine:
+        def __init__(self, cfg, record_only=False):
+            pass
+
+        def request_stop(self):
+            pass
+
+        async def run(self):
+            # mid-run the pid file must exist and hold our pid
+            seen["exists"] = os.path.exists(path)
+            if seen["exists"]:
+                with open(path) as fh:
+                    seen["pid"] = int(fh.read().strip())
+
+    monkeypatch.setattr(cli, "Engine", FakeEngine)
+    if os.path.exists(path):
+        os.remove(path)
+    cfg_file = write_tmp(GOOD.replace("symbol: SNDK", f"symbol: {symbol}"))
+    monkeypatch.setattr(sys, "argv",
+                        ["entropy-arb", "--config", cfg_file,
+                         "--env-file", NO_ENV, "--no-dashboard"])
+    cli.main()
+    assert seen["exists"] is True            # written on startup
+    assert seen["pid"] == os.getpid()        # this process's pid
+    assert not os.path.exists(path)          # removed again on exit
+
+
+def test_record_only_writes_no_pid_file(monkeypatch):
+    from entropy_arb import cli
+    from entropy_arb.cli import pid_file_path
+
+    class FakeEngine:
+        def __init__(self, cfg, record_only=False):
+            pass
+
+        def request_stop(self):
+            pass
+
+        async def run(self):
+            pass
+
+    monkeypatch.setattr(cli, "Engine", FakeEngine)
+    symbol = "entropy-arb-pidfile-test"
+    path = pid_file_path(symbol, "entropy", "lighter-rh")
+    if os.path.exists(path):
+        os.remove(path)
+    cfg_file = write_tmp(GOOD.replace("symbol: SNDK", f"symbol: {symbol}"))
+    monkeypatch.setattr(sys, "argv",
+                        ["entropy-arb", "--config", cfg_file,
+                         "--env-file", NO_ENV,
+                         "--record-only", "--no-dashboard"])
+    cli.main()
+    assert not os.path.exists(path)          # record-only never writes one
+
+
+def test_kill_running_bot_stops_the_recorded_process():
+    # a real subprocess whose command line contains "entropy_arb" is stopped
+    # by kill_running_bot (SIGTERM default disposition is enough) and its
+    # pid file is removed afterwards
+    from entropy_arb import cli
+    script = os.path.join(tempfile.gettempdir(),
+                          "entropy-arb-pidfile-test-stub.py")
+    with open(script, "w") as fh:
+        fh.write("import time\ntime.sleep(60)\n")
+    proc = subprocess.Popen([sys.executable, script])
+    path = os.path.join(tempfile.gettempdir(),
+                        f"entropy-arb-pidfile-test-{os.getpid()}.pid")
+    try:
+        with open(path, "w") as fh:
+            fh.write(f"{proc.pid}\n")
+        # the stub's command line contains "entropy-arb-pidfile-test", so it
+        # passes the same identity guard a real `entropy-arb` process would
+        assert cli._looks_like_our_bot(proc.pid) is True
+        cli.kill_running_bot(path)
+        assert proc.wait(timeout=10) != 0     # stopped (by the SIGTERM)
+        assert not os.path.exists(path)      # killed -> pid file removed
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if os.path.exists(script):
+            os.remove(script)
+
+
+def test_kill_running_bot_ignores_foreign_pid():
+    # a pid file naming a process that is NOT entropy-arb must be left alone
+    from entropy_arb import cli
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    path = os.path.join(tempfile.gettempdir(),
+                        f"entropy-arb-foreign-{os.getpid()}.pid")
+    try:
+        with open(path, "w") as fh:
+            fh.write(f"{proc.pid}\n")
+        cli.kill_running_bot(path)
+        assert proc.poll() is None           # untouched
+        assert os.path.exists(path)          # and its pid file kept
+    finally:
+        proc.kill()
+        proc.wait()
+        if os.path.exists(path):
+            os.remove(path)
+
+
 if __name__ == "__main__":
     test_config_flag_missing_file_clean_error()
     test_config_flag_selects_the_given_file()

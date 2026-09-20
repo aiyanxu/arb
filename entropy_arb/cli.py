@@ -43,10 +43,102 @@ import contextlib
 import logging
 import os
 import signal
+import subprocess
 import sys
+import time
 
 from entropy_arb.config import VENUES, ConfigError, load_config
 from entropy_arb.engine import Engine
+
+
+# Live-trading pid files live in /tmp: written by the trading path on
+# startup, read by `flatten` so it can kill the running bot before closing
+# positions (a flatten while the engine still trades would race it).
+# 任意 venue 均可作为 base 或 hedge 腿，文件名用 launch 时的 venue 名。
+def pid_file_path(symbol: str, base: str, hedge: str) -> str:
+    return f"/tmp/entropy-arb-{symbol}-{base}-{hedge}.pid"
+
+
+def write_pid_file(cfg) -> str | None:
+    """Record this process's pid for the live (symbol, base, hedge) pair.
+
+    Best-effort: a stale or unwritable pid file never stops the bot from
+    trading — flatten only uses it as a convenience to find the process.
+    """
+    path = pid_file_path(cfg.symbol, cfg.base_venue, cfg.hedge_venue)
+    try:
+        with open(path, "w") as fh:
+            fh.write(f"{os.getpid()}\n")
+        logging.getLogger("cli").info("pid %d written to %s",
+                                      os.getpid(), path)
+        return path
+    except OSError as e:
+        logging.getLogger("cli").warning("could not write pid file %s: %s",
+                                         path, e)
+        return None
+
+
+def read_pid_file(path: str) -> int | None:
+    """Read a pid from a pid file; None when missing/corrupt."""
+    try:
+        with open(path) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _looks_like_our_bot(pid: int) -> bool:
+    """True when `pid` is a live entropy-arb process.
+
+    A pid file can outlive its bot — /tmp is cleaned lazily and pids get
+    reused — so before signaling anything, verify the recorded process
+    really is an entropy-arb process (ps shows the command line). Anything
+    else (gone, or reused by another program) is ignored, not killed.
+    """
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             timeout=5, capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    cmd = out.strip()
+    return "entropy_arb" in cmd or "entropy-arb" in cmd
+
+
+def kill_running_bot(path: str) -> None:
+    """Stop the live bot recorded in a pid file, if it is still running.
+
+    SIGTERM gives the engine's signal handlers (eng.request_stop) a clean
+    shutdown; after a bounded wait a stubborn process gets SIGKILL. A pid
+    that is gone or was reused by another program is ignored, and the file
+    is removed once its process is gone.
+    """
+    pid = read_pid_file(path)
+    if pid is None or pid == os.getpid():
+        return
+    if not _looks_like_our_bot(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except PermissionError as e:
+        print(f"cannot stop the running bot (pid {pid}): {e}",
+              file=sys.stderr)
+        return
+    for _ in range(50):                     # up to ~5 s for a clean exit
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)                 # still alive?
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            break                           # alive, not ours to signal again
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    with contextlib.suppress(OSError):
+        os.remove(path)
 
 
 def setup_logging(level: str, log_file: str | None = None,
@@ -72,12 +164,22 @@ def setup_logging(level: str, log_file: str | None = None,
 
 async def amain(cfg, record_only: bool, use_dashboard: bool, force_tty: bool,
                 log_buffer, lang: str) -> None:
+    pid_path = None
+    if not record_only:
+        # live trading: publish our pid so `flatten` can find and stop this
+        # process before closing positions
+        pid_path = write_pid_file(cfg)
     eng = Engine(cfg, record_only=record_only)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, eng.request_stop)
     if not use_dashboard:
-        await eng.run()
+        try:
+            await eng.run()
+        finally:
+            if pid_path:
+                with contextlib.suppress(OSError):
+                    os.remove(pid_path)
         return
     from entropy_arb.dashboard import Dashboard
     dash = Dashboard(eng, log_buffer, cfg.log_file, force_terminal=force_tty,
@@ -91,6 +193,9 @@ async def amain(cfg, record_only: bool, use_dashboard: bool, force_tty: bool,
             await asyncio.wait_for(dash_task, timeout=5)
         if not dash_task.done():
             dash_task.cancel()
+        if pid_path:
+            with contextlib.suppress(OSError):
+                os.remove(pid_path)
 
 
 def analyze_entry(argv: list[str]) -> None:
@@ -128,6 +233,10 @@ def flatten_entry(args) -> None:
               "配置两个交易所的密钥", file=sys.stderr)
         sys.exit(2)
     setup_logging(cfg.log_level)
+    # if the live bot is running for this pair, stop it first — a flatten
+    # while the engine still trades would race the close orders
+    kill_running_bot(pid_file_path(cfg.symbol, cfg.base_venue,
+                                   cfg.hedge_venue))
     try:
         asyncio.run(run_flatten(cfg))
     except (RuntimeError, ConfigError) as e:
@@ -157,10 +266,18 @@ def web_entry(args) -> None:
     import uvicorn
     eng = Engine(cfg, record_only=args.record_only)
     app = make_app(cfg, engine=eng)
+    # live web sessions publish their pid too, so the flatten CLI can stop
+    # the dashboard+engine the same way it stops the plain trading process
+    pid_path = None if args.record_only else write_pid_file(cfg)
     logging.getLogger("web").warning(
         "dashboard on http://%s:%d — engine %s", args.host, args.port,
         "record-only" if args.record_only else "LIVE (real orders)")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    finally:
+        if pid_path:
+            with contextlib.suppress(OSError):
+                os.remove(pid_path)
 
 
 def main() -> None:

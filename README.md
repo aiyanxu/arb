@@ -149,6 +149,15 @@ until both venues are flat (exit 0); residual dust below
 `net_tolerance_base` counts as flat. Needs credentials (it sends real
 orders); the strategy and recorder are never started.
 
+**Stop the running bot first.** A live run (not `--record-only`) writes its
+pid to `/tmp/entropy-arb-<symbol>-<base>-<hedge>.pid` on startup and removes
+it on exit. `entropy-arb flatten` for the same pair reads that file and
+stops the bot (SIGTERM, then SIGKILL after a bounded wait) before closing
+positions — so a flatten can't race the engine's own orders. The pid file
+never blocks trading: an unwritable or stale file is a warning, and flatten
+verifies the recorded process really is entropy-arb (via `ps`) before
+signaling it, ignoring gone or reused pids.
+
 **Dashboard.** On a terminal the bot shows a live Rich dashboard: both
 books with age/spread, positions and caps, equity and session PnL, the
 executable premium of each direction against its full hurdle (fees and
