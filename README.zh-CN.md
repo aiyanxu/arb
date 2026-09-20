@@ -125,6 +125,8 @@ entropy-arb          # 或带覆盖参数：--symbol SNDK --base entropy --hedge
 
 ```bash
 entropy-arb flatten --symbol SNDK --base entropy --hedge lighter-rh
+# 或从配置文件读取组合（--symbol/--base/--hedge 仍可覆盖）：
+entropy-arb flatten --config config-btc.yaml
 ```
 
 命令会读取两腿真实持仓，按实时盘口以 `hedge_slippage_bps` 价格保护发送

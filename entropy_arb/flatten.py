@@ -19,6 +19,7 @@ the next round retries.
 
 Usage:
     entropy-arb flatten --symbol SNDK --base entropy --hedge lighter-rh
+    entropy-arb flatten --config config-btc.yaml   # pair from the config file
 """
 from __future__ import annotations
 

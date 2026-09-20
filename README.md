@@ -139,6 +139,8 @@ down — without starting the strategy:
 
 ```bash
 entropy-arb flatten --symbol SNDK --base entropy --hedge lighter-rh
+# or take the pair from a config file (--symbol/--base/--hedge still override):
+entropy-arb flatten --config config-btc.yaml
 ```
 
 It reads each venue's real position, sends reduce-only taker orders with

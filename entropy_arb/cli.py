@@ -14,6 +14,7 @@
 
     # one-shot close BOTH legs' positions for a (base, hedge, symbol) pair
     entropy-arb flatten --symbol SNDK --base entropy --hedge lighter-rh
+    entropy-arb flatten                 # pair comes from config.yaml
 
     # analyze recorded minute data -> suggested thresholds (no config needed)
     entropy-arb analyze [--db logs/minutes.duckdb] [--symbol SNDK] ...
@@ -103,12 +104,14 @@ def analyze_entry(argv: list[str]) -> None:
 
 
 def flatten_entry(args) -> None:
-    """`entropy-arb flatten --symbol S --base A --hedge B` — one-shot close.
+    """`entropy-arb flatten [--symbol S --base A --hedge B]` — one-shot close.
 
-    Loads config.yaml (+ .env credentials — flatten sends real orders),
-    then closes both legs' actual exchange positions with reduce-only
-    orders. Any per-run overrides win over config.yaml, same as the
-    trading path. Never starts the strategy or the recorder.
+    The pair comes from config.yaml (symbol:, base_venue:, hedge_venue:);
+    --symbol / --base / --hedge are optional per-run overrides that win over
+    the file, same as the trading path. Loads config.yaml (+ .env
+    credentials — flatten sends real orders), then closes both legs' actual
+    exchange positions with reduce-only orders. Never starts the strategy
+    or the recorder.
     """
     from entropy_arb.flatten import run_flatten
     try:
@@ -217,14 +220,20 @@ def main() -> None:
                         "credentials. / 一键清仓指定组合两腿的真实持仓，"
                         "只发 reduce-only 平仓单（价格保护），重复直到清零。"
                         "会发送真实订单，需要 .env 密钥。")
-        p.add_argument("--symbol", required=True,
-                       help="symbol whose position to close, e.g. SNDK")
-        p.add_argument("--base", required=True, choices=VENUES,
+        p.add_argument("--symbol", default=None,
+                       help="override the symbol from config.yaml, e.g. SNDK "
+                            "(required only when config.yaml has no "
+                            "symbol / 未指定时读取 config.yaml 的 symbol)")
+        p.add_argument("--base", default=None, choices=VENUES,
                        metavar="VENUE",
-                       help=f"base leg venue, one of: {', '.join(VENUES)}")
-        p.add_argument("--hedge", required=True, choices=VENUES,
+                       help=f"override the base venue from config.yaml, one "
+                            f"of: {', '.join(VENUES)} / 未指定时读取 "
+                            f"config.yaml 的 base_venue")
+        p.add_argument("--hedge", default=None, choices=VENUES,
                        metavar="VENUE",
-                       help="hedge leg venue, must differ from --base")
+                       help="override the hedge venue from config.yaml "
+                            "(must differ from --base) / 未指定时读取 "
+                            "config.yaml 的 hedge_venue")
         p.add_argument("--config", default="config.yaml",
                        help="strategy config (default: config.yaml)")
         p.add_argument("--env-file", default=".env",

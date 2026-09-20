@@ -36,12 +36,34 @@ def run_cli(args):
 
 
 def test_flatten_requires_base_hedge_symbol():
-    # --base / --hedge are mandatory for flatten: a bogus venue must be
-    # rejected by argparse's choices (exit 2), not silently accepted
+    # a bogus venue must be rejected by argparse's choices (exit 2), not
+    # silently accepted
     r = run_cli(["flatten", "--symbol", "SNDK", "--base", "entropy",
                  "--hedge", "no-such-venue"])
     assert r.returncode == 2
     assert "invalid choice" in r.stderr
+
+
+def test_flatten_reads_pair_from_config():
+    # --symbol/--base/--hedge are optional overrides: without them the pair
+    # comes from the --config file. The config here names venues that must
+    # differ; the same-venue error can only come from the file's content,
+    # proving it was actually read (the missing env file then fails creds
+    # with the same exit 2 — network never touched).
+    cfg = write_tmp(GOOD)
+    r = run_cli(["flatten", "--config", cfg, "--env-file", NO_ENV])
+    assert r.returncode == 2
+    assert "flatten sends real orders" in r.stderr
+
+
+def test_flatten_overrides_win_over_config():
+    # explicit flags win over the config file: the file says entropy/
+    # lighter-rh, but a --hedge equal to --base must be rejected even
+    # though the file's pair is valid
+    r = run_cli(["flatten", "--symbol", "SNDK", "--base", "entropy",
+                 "--hedge", "entropy", "--env-file", NO_ENV])
+    assert r.returncode == 2
+    assert "must differ" in r.stderr
 
 
 def test_flatten_missing_creds_clean_error():
