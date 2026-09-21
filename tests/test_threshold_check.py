@@ -92,13 +92,25 @@ def test_drift_report_tolerance_boundary():
 
 
 def test_drift_report_zero_config_value():
-    # config 0 -> no relative denominator; an absolute move > 1 bps counts
+    # config 0 -> no relative denominator; an absolute move > 1.5 bps counts
     cur = {"midline_bps": 0.0, "upper_bps": 4.0, "lower_bps": 4.0}
     sug = {"midline_bps": 3.0, "upper_bps": 4.0, "lower_bps": 4.0}
     assert [k for k, *_ in drift_report(cur, sug, 0.10)] == ["midline_bps"]
     # suggested stays ~0: quiet
     sug0 = {"midline_bps": 0.5, "upper_bps": 4.0, "lower_bps": 4.0}
     assert drift_report(cur, sug0, 0.10) == []
+
+
+def test_drift_report_abs_floor_flags_small_relative_moves():
+    # a large config value can hide a real loss behind the relative test:
+    # 20 -> 21.8 is 9% (inside 10% tolerance) but 1.8 bps of edge, above the
+    # 1.5 bps floor -> flagged
+    cur = {"midline_bps": 20.0, "upper_bps": 4.0, "lower_bps": 4.0}
+    sug = {"midline_bps": 21.8, "upper_bps": 4.0, "lower_bps": 4.0}
+    assert [k for k, *_ in drift_report(cur, sug, 0.10)] == ["midline_bps"]
+    # small move inside both tests stays quiet
+    quiet = {"midline_bps": 21.0, "upper_bps": 4.0, "lower_bps": 4.0}
+    assert drift_report(cur, quiet, 0.10) == []
 
 
 # ------------------------------------------------------------ end-to-end

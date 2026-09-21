@@ -14,12 +14,16 @@ exactly the numbers a user would paste into config.yaml:
     lower_bps   -> p90 of the buy-side room likewise
 
 Relative drift is measured against the CONFIG value (what the user
-committed to). A config value of 0 (a common midline) can't form a ratio;
-there any absolute move of >1 bps counts as drifted.
+committed to), with an absolute floor on top: any move beyond
+ABS_FLOOR_BPS (1.5 bps) counts as drifted even when the ratio is small —
+10% of a large midline is already a silent loss of a fifth of a round
+trip's net edge. A config value of 0 (a common midline) can't form a
+ratio; there the floor is the whole test.
 
 定时阈值巡检：每 interval_sec 用采集的分钟数据按 analyze 的建议算法重新
 推导 thresholds（中位数→midline，p90→upper/lower），与 config.yaml 当前值
-对比，任一值相对偏差超过容差（默认 10%）时调用 notify.send() 发通知。
+对比，任一值相对偏差超过容差（默认 10%）或绝对偏移超过 1.5 bps 时调用
+notify.send() 发通知。
 数据不足或库不可读时静默跳过——巡检绝不影响交易。
 
 Usage: wired into the engine as a background task (threshold_check.enabled).
@@ -40,9 +44,15 @@ SUGGEST_FLOOR_BPS = 1.0
 MIN_MINUTES = 120
 MIN_SAMPLES = 10          # analyze's default quality gate
 HOURS = 0.0               # 0 = all recorded data (analyze's default)
-# when the config value is exactly 0, a suggested move beyond this absolute
-# size counts as drifted (a 10% rel test is meaningless against zero)
-ZERO_BASE_ABS_BPS = 1.0
+# absolute drift floor, applied to every key alongside the relative test:
+# a suggested move beyond this many bps counts as drifted even when the
+# relative test passes (10% of a large midline is a lot of edge to lose
+# silently), and it is the whole test when the config value is 0 (no ratio
+# can be formed). Sized from recorded data: with ~120 usable minutes in a
+# 2h window and this pair's observed dispersion (~5.6 bps std), the median's
+# standard error is ~0.6 bps, so 1.5 bps (~2.3 sigma) stays quiet on
+# sampling noise while flagging a real shift within one check interval.
+ABS_FLOOR_BPS = 1.5
 
 _KEYS = ("midline_bps", "upper_bps", "lower_bps")
 
@@ -67,22 +77,24 @@ def suggested_thresholds(rows: list, fees: float = 0.0) -> dict:
 def drift_report(current: dict, suggested: dict,
                  tolerance: float) -> list:
     """[(key, current, suggested, rel)] for each value whose relative drift
-    from the config value exceeds tolerance. Relative to the config value
-    (the user's committed number). A config value of 0 is special-cased:
-    only an absolute move beyond ZERO_BASE_ABS_ABS bps counts.
+    from the config value exceeds tolerance OR whose absolute move exceeds
+    ABS_FLOOR_BPS. Relative to the config value (the user's committed
+    number); a config value of 0 can't form a ratio, so only the floor
+    applies there.
     """
     out = []
     for k in _KEYS:
         cur = float(current[k])
         sug = float(suggested[k])
         if abs(cur) < 1e-9:
-            drifted = abs(sug) > ZERO_BASE_ABS_BPS
+            drifted = abs(sug) > ABS_FLOOR_BPS
             rel = float("inf")
         else:
             rel = abs(sug - cur) / abs(cur)
             # a hair of slack: 4.4 vs 4.0 is exactly 10% but floating point
             # makes it 0.10000000000000009
-            drifted = rel > tolerance + 1e-9
+            drifted = (rel > tolerance + 1e-9
+                       or abs(sug - cur) > ABS_FLOOR_BPS)
         if drifted:
             out.append((k, cur, sug, rel))
     return out
