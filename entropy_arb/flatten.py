@@ -113,6 +113,12 @@ async def run_flatten(cfg) -> None:
         await asyncio.gather(base.load_market(), hedge.load_market())
         base.init_signer()
         hedge.init_signer()
+        # seed nonce counters before the first close order (duck-typed:
+        # only Lighter venues have prime())
+        for v in (base, hedge):
+            prime = getattr(v, "prime", None)
+            if prime is not None:
+                await prime()
         # order books come from the venues' own websockets — start them so
         # the close orders can be priced
         tasks = base.start_tasks(stop, lambda: None, live=True)

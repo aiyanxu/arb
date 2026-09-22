@@ -27,9 +27,12 @@ try:
 except ImportError:
     from websockets import connect as ws_connect  # type: ignore
 
+import os
+
 from .book import OrderBook
 from .config import VenueConf
 from .feeds import LighterBookFeed
+from .lighter_nonce import NonceLockBusy, make_nonce_allocator, nonce_rejected
 
 log = logging.getLogger("lighter")
 
@@ -165,8 +168,11 @@ class LighterVenue:
         self.min_base = 0.0
         self.min_quote = 10.0
         self.signer = None
+        self.nonce = None          # LighterNonceAllocator (init_signer)
         self.orders_feed: Optional[AccountOrdersFeed] = None
-        self._coi = int(time.time() * 1000)
+        # coi seed: ms clock shifted left + pid, so two processes on the
+        # same account+market cannot mint the same client_order_index
+        self._coi = (int(time.time() * 1000) << 12) | (os.getpid() & 0xFFF)
 
     # ------------------------------------------------------------------ REST
 
@@ -203,24 +209,52 @@ class LighterVenue:
     def init_signer(self) -> None:
         c = self.conf.lighter_creds
         assert c is not None and c.complete, f"[{self.name}] missing credentials"
+        assert c.account_index is not None and c.api_key_index is not None
+        # 255 is the SDK's "no key given" sentinel — a signing key must be 0-254
+        assert 0 <= c.api_key_index <= 254, \
+            f"[{self.name}] LIGHTER API_KEY_INDEX must be 0..254"
         try:
             from lighter import SignerClient
+            from lighter.nonce_manager import NonceManagerType
         except ImportError as e:
             raise RuntimeError(
                 "live trading on Lighter needs the official SDK — "
                 "pip install -r requirements-live.txt "
                 "(git+https://github.com/elliottech/lighter-python.git)") from e
+        # We manage nonces ourselves (entropy_arb.lighter_nonce): the SDK's
+        # optimistic manager decrements on failure and resyncs only after the
+        # resulting rejection — the source of code=21104. NONE makes any
+        # accidental un-managed call fail loudly instead of double-managing.
         signer = SignerClient(
             url=self.profile.api_url,
             account_index=c.account_index,
             api_private_keys={c.api_key_index: c.api_private_key},
             chain_id=self.profile.chain_id,
+            nonce_management_type=NonceManagerType.NONE,
         )
         err = signer.check_client()
         if err is not None:
             raise RuntimeError(f"[{self.name}] API key check failed: {err}")
         self.signer = signer
+        # one nonce sequence per (deployment host, account, api key):
+        # Redis when several processes share the account, local otherwise
+        self.nonce = make_nonce_allocator(self.conf,
+                                          self._next_nonce_from_server)
         log.info("[%s] signer ready (account %d)", self.name, c.account_index)
+
+    async def _next_nonce_from_server(self) -> int:
+        """GET /api/v1/nextNonce — the server's truth for our api key."""
+        c = self.conf.lighter_creds
+        assert c is not None and c.complete
+        data = await self._get("/api/v1/nextNonce",
+                               params={"account_index": c.account_index,
+                                       "api_key_index": c.api_key_index})
+        return int(data["nonce"])
+
+    async def prime(self) -> None:
+        """Seed the nonce counter at startup (also proves Redis is up)."""
+        if self.nonce is not None:
+            await self.nonce.prime()
 
     def start_tasks(self, stop: asyncio.Event, notify, live: bool) -> list:
         tasks = [asyncio.create_task(
@@ -254,6 +288,12 @@ class LighterVenue:
                 await r.read()
         except Exception as e:
             log.debug("[%s] signer keepalive failed: %r", self.name, e)
+        if self.nonce is None:
+            return
+        try:
+            await self.nonce.ping()   # surfaces a dead Redis early
+        except Exception as e:
+            log.warning("[%s] nonce source unreachable: %r", self.name, e)
 
     # ------------------------------------------------------------ price grid
 
@@ -271,24 +311,49 @@ class LighterVenue:
     async def send_taker(self, *, is_buy: bool, qty: float, limit_px: float,
                          reduce_only: bool = False) -> dict:
         """Market order with avg-price protection; settle via account ws."""
-        assert self.signer is not None
+        assert self.signer is not None and self.nonce is not None
         from lighter import SignerClient
         coi = self._next_coi()
         fut = self.orders_feed.watch(coi) if self.orders_feed else None
         base_amount = int(round(qty * 10 ** self.size_decimals))
         price = int(round(limit_px * 10 ** self.price_decimals))
         try:
-            _tx, resp, err = await self.signer.create_order(
-                market_index=self.market_id,
-                client_order_index=coi,
-                base_amount=base_amount,
-                price=price,
-                is_ask=not is_buy,
-                order_type=SignerClient.ORDER_TYPE_MARKET,
-                time_in_force=SignerClient.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
-                reduce_only=reduce_only,
-                order_expiry=SignerClient.DEFAULT_IOC_EXPIRY,
-            )
+            # The send lock spans draw → HTTP completion (not settlement) so
+            # transactions on one api key reach the sequencer in nonce order
+            # — across processes too, when Redis coordinates them.
+            async with self.nonce.send_lock():
+                nonce = await self.nonce.draw()
+                _tx, resp, err = await self.signer.create_order(
+                    market_index=self.market_id,
+                    client_order_index=coi,
+                    base_amount=base_amount,
+                    price=price,
+                    is_ask=not is_buy,
+                    order_type=SignerClient.ORDER_TYPE_MARKET,
+                    time_in_force=SignerClient.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+                    reduce_only=reduce_only,
+                    order_expiry=SignerClient.DEFAULT_IOC_EXPIRY,
+                    nonce=nonce,
+                    api_key_index=self.conf.lighter_creds.api_key_index,
+                    # gaps allowed, strictly increasing only — a drawn but
+                    # unconsumed nonce (timeout, API reject) is harmless
+                    skip_nonce=SignerClient.SKIP_NONCE_ON,
+                )
+                if nonce_rejected(err, resp):
+                    # counter is behind the server (someone else consumed
+                    # nonces) — re-anchor now; the engine's retry succeeds
+                    try:
+                        await self.nonce.resync_from_server()
+                    except Exception as re:
+                        log.warning("[%s] nonce resync failed: %r",
+                                    self.name, re)
+        except NonceLockBusy as e:
+            # a trading peer held the cross-process lock past our patience;
+            # the order was NOT sent — clean failure, engine retries
+            if fut is not None:
+                self.orders_feed.unwatch(coi)
+            return {"status": "send-failed", "filled_base": 0.0, "avg_px": None,
+                    "err": f"NONCE_LOCK: {e}", "unresolved": False}
         except Exception as e:
             if fut is not None:
                 self.orders_feed.unwatch(coi)
@@ -350,6 +415,11 @@ class LighterVenue:
         return 0.0
 
     async def close(self) -> None:
+        if self.nonce is not None:
+            try:
+                await self.nonce.close()
+            except Exception:
+                pass
         if self.signer is not None:
             try:
                 await self.signer.api_client.close()

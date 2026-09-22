@@ -152,6 +152,9 @@ class VenueConf:
     # lighter
     lighter_profile: Optional[LighterProfile] = None
     lighter_creds: Optional[LighterCreds] = None
+    # shared nonce dispenser for processes trading the same Lighter account
+    # (LIGHTER_NONCE_REDIS_URL); None = per-process local counter
+    lighter_nonce_redis_url: Optional[str] = None
     # aster
     aster_creds: Optional[AsterCreds] = None
     # polymarket
@@ -446,11 +449,15 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str) -> VenueConf:
         creds = LighterCreds(_env_i(prefix + "ACCOUNT_INDEX"),
                              _env_i(prefix + "API_KEY_INDEX"),
                              _env_s(prefix + "API_PRIVATE_KEY"))
+        # one shared nonce dispenser for BOTH Lighter deployments: the Redis
+        # key is (host, account, api-key) so the deployments never collide
         return VenueConf(key=role, kind="lighter", label=spec.label,
                          symbol=symbol, fee_bps=fee, cap_usd=cap,
                          orders_per_min=orders,
                          lighter_profile=spec.lighter_profile,
-                         lighter_creds=creds)
+                         lighter_creds=creds,
+                         lighter_nonce_redis_url=_env_s(
+                             "LIGHTER_NONCE_REDIS_URL"))
 
     if spec.kind == "aster":
         # aster can occupy at most one leg (the two legs must differ), so

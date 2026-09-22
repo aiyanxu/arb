@@ -432,6 +432,16 @@ its own block.
   Mainnet and the Robinhood chain are separate accounts and separate keys
   (see [lighter-python](https://github.com/elliottech/lighter-python)).
   Either may be base or hedge — each reads its own block by venue name.
+- **Lighter nonce coordination** — the bot manages order nonces itself
+  (server-seeded, strictly increasing, `skip_nonce` mode) instead of the
+  SDK's default manager, whose failure-decrement caused the
+  `code=21104 invalid nonce` storms. Each Lighter account+key gets one
+  counter per process. When **several processes trade the same Lighter
+  account** (several symbol pairs, or a CLI bot plus a live
+  `entropy-arb web` session), set `LIGHTER_NONCE_REDIS_URL` (e.g.
+  `redis://localhost:6379/0`; the compose stack runs a Redis and sets it
+  automatically) so they share one counter instead of colliding. Starting
+  a second live bot on the *same pair* is refused at startup.
 - **polymarket** — run `python tools/polymarket_make_proxy.py
   --owner-key 0x...` once: it generates a fresh PROXY keypair and has
   your OWNER wallet EIP-712-sign the createProxy ceremony. It prints
@@ -479,6 +489,7 @@ entropy_arb/book.py      order books + fee-aware crossing/sizing math
 entropy_arb/feeds.py     official HL ws + zkLighter ws + Aster ws + Polymarket ws book feeds
 entropy_arb/venue_hl.py  Hyperliquid dex adapter (Entropy, tradexyz)
 entropy_arb/venue_lighter.py  zkLighter adapter (mainnet, Robinhood chain)
+entropy_arb/lighter_nonce.py  Lighter order-nonce allocators (local / Redis)
 entropy_arb/venue_aster.py    Aster DEX V3 adapter (EIP-712 signed REST)
 entropy_arb/venue_polymarket.py  Polymarket Perps adapter (proxy-wallet, msgpack+EIP-712 signed REST)
 entropy_arb/engine.py    the two-venue strategy loop + shared venue factory

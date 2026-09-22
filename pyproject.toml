@@ -36,10 +36,17 @@ live = [
     # Lighter signing. Installs from the SDK's current main; for reproducible
     # deploys pin a commit: ...lighter-python.git@<commit-sha>
     "lighter-sdk @ git+https://github.com/elliottech/lighter-python.git",
+    # shared nonce dispenser for processes trading one Lighter account
+    # (LIGHTER_NONCE_REDIS_URL); optional — without it each process keeps a
+    # local, server-seeded counter
+    "redis>=5.0",
 ]
 
 dev = [
     "pytest>=8",
+    # fake Redis for the nonce-allocator tests; [lua] is required —
+    # redis-py's Lock releases via an EVALSHA script
+    "fakeredis[lua]>=2.23",
 ]
 
 web = [

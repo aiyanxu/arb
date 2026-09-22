@@ -391,6 +391,14 @@ FROM read_csv('logs/minutes.csv');
   主网与 Robinhood 链是两套独立账户和密钥（参见
   [lighter-python](https://github.com/elliottech/lighter-python)）。
   二者可自由作为 base 或 hedge 腿——各读各自 venue 的区块。
+- **Lighter nonce 协调** —— 本机器人自行管理订单 nonce（服务端播种、
+  严格递增、`skip_nonce` 模式），不再使用 SDK 默认管理器——其失败回退
+  正是 `code=21104 invalid nonce` 风暴的根源。每个 Lighter 账户+密钥
+  每进程一个计数器。**多个进程共用同一 Lighter 账户**（多个交易对、
+  或 CLI 与 `entropy-arb web` 实盘并存）时，设置
+  `LIGHTER_NONCE_REDIS_URL`（如 `redis://localhost:6379/0`；compose 部署
+  自带 Redis 并自动设置）让它们共享同一计数器，避免互相冲突。同一交易对
+  重复启动会在启动时直接拒绝。
 - **polymarket** —— 运行一次 `python tools/polymarket_make_proxy.py
   --owner-key 0x...`：脚本会新建 PROXY 钱包并用 OWNER 钱包完成 EIP-712
   createProxy 签名，打印 `POLYMARKET_PROXY_ADDRESS` /
@@ -430,6 +438,7 @@ entropy_arb/book.py      订单簿 + 含手续费的套利规模计算
 entropy_arb/feeds.py     官方 HL ws + zkLighter ws + Aster ws + Polymarket ws 行情
 entropy_arb/venue_hl.py  Hyperliquid dex 适配器（Entropy、tradexyz）
 entropy_arb/venue_lighter.py  zkLighter 适配器（主网、Robinhood 链）
+entropy_arb/lighter_nonce.py  Lighter 订单 nonce 分配器（本地 / Redis）
 entropy_arb/venue_aster.py    Aster DEX V3 适配器（EIP-712 签名 REST）
 entropy_arb/venue_polymarket.py  Polymarket Perps 适配器（proxy 钱包，msgpack+EIP-712 签名 REST）
 entropy_arb/engine.py    双交易所策略主循环 + 共享 venue 工厂

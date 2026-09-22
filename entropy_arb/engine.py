@@ -201,6 +201,12 @@ class Engine:
                     "请用 --record-only")
             self.base.init_signer()
             self.hedge.init_signer()
+            # seed nonce counters / prove Redis is reachable before the
+            # first order (duck-typed: only Lighter venues have prime())
+            for v in (self.base, self.hedge):
+                prime = getattr(v, "prime", None)
+                if prime is not None:
+                    await prime()
         if self.base.kind == "hl" and self.hedge.kind == "hl":
             # both legs on Hyperliquid: one signer shares one nonce sequence
             # and (same address) one core-equity account

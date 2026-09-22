@@ -135,6 +135,38 @@ def test_lighter_env_creds_keyed_by_venue():
             os.environ.pop(k, None)
 
 
+def test_lighter_nonce_redis_url_read_by_both_deployments():
+    # one shared dispenser env var; both Lighter legs see it, non-Lighter
+    # legs never do; unset -> None (per-process local counter)
+    env = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+    env.write("LIGHTER_ACCOUNT_INDEX=1\nLIGHTER_API_KEY_INDEX=2\n"
+              "LIGHTER_API_PRIVATE_KEY=0xmain\n"
+              "LIGHTER_RH_ACCOUNT_INDEX=11\nLIGHTER_RH_API_KEY_INDEX=22\n"
+              "LIGHTER_RH_API_PRIVATE_KEY=0xrh\n"
+              "LIGHTER_NONCE_REDIS_URL=redis://localhost:6379/0\n")
+    env.close()
+    try:
+        cfg = load_config(write_tmp(MINIMAL), env.name, symbol="SNDK",
+                          base_venue="lighter", hedge_venue="lighter-rh",
+                          symbol_map_file=NO_MAP)
+        assert cfg.base.lighter_nonce_redis_url == \
+            "redis://localhost:6379/0"
+        assert cfg.hedge.lighter_nonce_redis_url == \
+            "redis://localhost:6379/0"
+    finally:
+        os.unlink(env.name)
+        for k in ("LIGHTER_ACCOUNT_INDEX", "LIGHTER_API_KEY_INDEX",
+                  "LIGHTER_API_PRIVATE_KEY", "LIGHTER_RH_ACCOUNT_INDEX",
+                  "LIGHTER_RH_API_KEY_INDEX", "LIGHTER_RH_API_PRIVATE_KEY",
+                  "LIGHTER_NONCE_REDIS_URL"):
+            os.environ.pop(k, None)
+    # unset (load_dotenv does not override a pre-set var, so pop first)
+    cfg = load_config(write_tmp(MINIMAL), NO_ENV, symbol="SNDK",
+                      base_venue="lighter", hedge_venue="entropy",
+                      symbol_map_file=NO_MAP)
+    assert cfg.base.lighter_nonce_redis_url is None
+
+
 def expect_error(yaml_text: str, needle: str, **kw):
     try:
         load(yaml_text, **kw)

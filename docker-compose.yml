@@ -10,6 +10,22 @@
 # missing, which the bot cannot read.
 
 services:
+  # Shared nonce dispenser for processes trading the same Lighter account
+  # (the bot sets LIGHTER_NONCE_REDIS_URL=redis://redis:6379/0 below).
+  # Deliberately NO persistence: after a restart the counters re-seed from
+  # the exchange's /api/v1/nextNonce, which is always more current than any
+  # saved copy (a stale saved counter would be a bug, not a feature).
+  redis:
+    image: redis:7-alpine
+    container_name: entropy-arb-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # host processes (a second bot outside compose) can share it via
+    # redis://localhost:6379/0 — remove the ports mapping to keep it
+    # compose-internal
+    ports:
+      - "127.0.0.1:6379:6379"
+
   entropy-arb:
     build:
       context: .
@@ -19,12 +35,18 @@ services:
     restart: unless-stopped
     init: true
     stop_grace_period: 30s          # engine finishes settles; duckdb closed between writes
+    depends_on:
+      - redis
     # Credentials are read at runtime, never baked into the image.
     # 'required: false' lets the bot start without a .env (compose >= 2.24);
     # on older compose, delete this block or create .env first.
     env_file:
       - path: .env
         required: false
+    environment:
+      # compose environment wins over .env (load_dotenv never overrides
+      # pre-set vars) — the container always coordinates nonces via Redis
+      LIGHTER_NONCE_REDIS_URL: redis://redis:6379/0
     # Alternative to .env (load_dotenv does not override pre-set variables):
     # environment:
     #   HL_PRIVATE_KEY: ...
