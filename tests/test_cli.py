@@ -249,6 +249,75 @@ def test_kill_running_bot_ignores_foreign_pid():
             os.remove(path)
 
 
+def test_write_pid_file_refuses_while_peer_is_live():
+    # a live entropy-arb process on the same pair blocks a second start:
+    # two bots on one pair would trade the same Lighter nonce sequence
+    from entropy_arb import cli
+    script = os.path.join(tempfile.gettempdir(),
+                          "entropy-arb-pidguard-test-stub.py")
+    with open(script, "w") as fh:
+        fh.write("import time\ntime.sleep(60)\n")
+    proc = subprocess.Popen([sys.executable, script])
+    path = os.path.join(tempfile.gettempdir(),
+                        f"entropy-arb-pidguard-{os.getpid()}.pid")
+    try:
+        with open(path, "w") as fh:
+            fh.write(f"{proc.pid}\n")
+        assert cli._looks_like_our_bot(proc.pid) is True
+
+        class FakeCfg:
+            symbol, base_venue, hedge_venue = "X", "entropy", "lighter-rh"
+
+        # write_pid_file must hit OUR pid path — monkeypatch the path builder
+        real_path = cli.pid_file_path
+        cli.pid_file_path = lambda *a: path
+        try:
+            try:
+                cli.write_pid_file(FakeCfg())
+                raise AssertionError("expected RuntimeError")
+            except RuntimeError as e:
+                assert str(proc.pid) in str(e)
+                assert "another entropy-arb" in str(e)
+        finally:
+            cli.pid_file_path = real_path
+        # the file still holds the peer's pid — not overwritten
+        with open(path) as fh:
+            assert int(fh.read().strip()) == proc.pid
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if os.path.exists(script):
+            os.remove(script)
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_write_pid_file_overwrites_stale_pid():
+    # a dead peer's pid file is just overwritten (best-effort, as before)
+    from entropy_arb import cli
+    path = os.path.join(tempfile.gettempdir(),
+                        f"entropy-arb-pidstale-{os.getpid()}.pid")
+    with open(path, "w") as fh:
+        fh.write("999999\n")               # almost certainly not a live bot
+    try:
+        class FakeCfg:
+            symbol, base_venue, hedge_venue = "X", "entropy", "lighter-rh"
+
+        real_path = cli.pid_file_path
+        cli.pid_file_path = lambda *a: path
+        try:
+            got = cli.write_pid_file(FakeCfg())
+        finally:
+            cli.pid_file_path = real_path
+        assert got == path
+        with open(path) as fh:
+            assert int(fh.read().strip()) == os.getpid()
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
 if __name__ == "__main__":
     test_config_flag_missing_file_clean_error()
     test_config_flag_selects_the_given_file()

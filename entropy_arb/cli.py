@@ -62,10 +62,23 @@ def pid_file_path(symbol: str, base: str, hedge: str) -> str:
 def write_pid_file(cfg) -> str | None:
     """Record this process's pid for the live (symbol, base, hedge) pair.
 
-    Best-effort: a stale or unwritable pid file never stops the bot from
-    trading — flatten only uses it as a convenience to find the process.
+    Fails fast when another live entropy-arb process already holds the
+    pair's pid file: two bots on one pair trade the same accounts (and on
+    Lighter, the same nonce sequence) — that collision is how the
+    'invalid nonce' storms happened. A stale file (process gone or pid
+    reused by another program) is still just overwritten — pid files are
+    only advisory, an unwritable file never stops a record-only run.
     """
     path = pid_file_path(cfg.symbol, cfg.base_venue, cfg.hedge_venue)
+    old_pid = read_pid_file(path)
+    if old_pid is not None and old_pid != os.getpid() \
+            and _looks_like_our_bot(old_pid):
+        raise RuntimeError(
+            f"another entropy-arb process (pid {old_pid}) is live for "
+            f"{cfg.symbol}/{cfg.base_venue}/{cfg.hedge_venue} — stop it "
+            f"(or `entropy-arb flatten`) before starting a second bot on "
+            f"the same pair / 已有进程 (pid {old_pid}) 正在运行同一交易对，"
+            f"请先停止它再启动 / pid file: {path}")
     try:
         with open(path, "w") as fh:
             fh.write(f"{os.getpid()}\n")
@@ -268,7 +281,12 @@ def web_entry(args) -> None:
     app = make_app(cfg, engine=eng)
     # live web sessions publish their pid too, so the flatten CLI can stop
     # the dashboard+engine the same way it stops the plain trading process
-    pid_path = None if args.record_only else write_pid_file(cfg)
+    pid_path = None
+    try:
+        pid_path = None if args.record_only else write_pid_file(cfg)
+    except RuntimeError as e:
+        print(f"startup error: {e}", file=sys.stderr)
+        sys.exit(1)
     logging.getLogger("web").warning(
         "dashboard on http://%s:%d — engine %s", args.host, args.port,
         "record-only" if args.record_only else "LIVE (real orders)")
