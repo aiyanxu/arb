@@ -39,6 +39,9 @@ log = logging.getLogger("lighter")
 OPEN_STATUSES = {"in-progress", "pending", "open"}
 AUTH_REFRESH_SEC = 8 * 60
 REST_TIMEOUT = 10.0
+# client_order_index is a 48-bit field: the sequencer rejects anything larger
+# ("ClientOrderIndex should not be larger than 281474976710655")
+COI_MAX = (1 << 48) - 1
 
 
 class AccountOrdersFeed:
@@ -170,9 +173,12 @@ class LighterVenue:
         self.signer = None
         self.nonce = None          # LighterNonceAllocator (init_signer)
         self.orders_feed: Optional[AccountOrdersFeed] = None
-        # coi seed: ms clock shifted left + pid, so two processes on the
-        # same account+market cannot mint the same client_order_index
-        self._coi = (int(time.time() * 1000) << 12) | (os.getpid() & 0xFFF)
+        # coi seed: low 32 bits of the ms clock over the low 16 of the pid, so
+        # two processes on the same account+market cannot mint the same
+        # client_order_index. Both parts are masked because the field is 48
+        # bits wide (a full ms clock << 12 overflows it by two orders).
+        self._coi = ((int(time.time() * 1000) & 0xFFFFFFFF) << 16) \
+            | (os.getpid() & 0xFFFF)
 
     # ------------------------------------------------------------------ REST
 
@@ -305,7 +311,9 @@ class LighterVenue:
     # ------------------------------------------------------------- execution
 
     def _next_coi(self) -> int:
-        self._coi += 1
+        # wrap rather than climb past the 48-bit field (0 is a valid index but
+        # never handed out, so a wrap is visibly distinct from a fresh order)
+        self._coi = self._coi + 1 if self._coi < COI_MAX else 1
         return self._coi
 
     async def send_taker(self, *, is_buy: bool, qty: float, limit_px: float,

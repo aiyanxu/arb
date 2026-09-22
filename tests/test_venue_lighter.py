@@ -319,6 +319,24 @@ def test_send_taker_passes_explicit_nonce_api_key_skip_nonce():
     assert v.signer.calls[1]["nonce"] == 101         # strictly advancing
 
 
+def test_client_order_index_stays_within_48_bit_field():
+    """The sequencer rejects coi > 2**48-1, so the seed and every increment
+    must stay inside the field."""
+    from entropy_arb.venue_lighter import COI_MAX
+
+    v = signed_venue()
+    assert 0 < v._coi <= COI_MAX
+    seen = []
+    for _ in range(3):
+        r = run(v.send_taker(is_buy=True, qty=0.5, limit_px=100.0))
+        assert r["status"] == "sent-unconfirmed"
+        seen.append(v.signer.calls[-1]["client_order_index"])
+    assert all(0 < c <= COI_MAX for c in seen)
+    assert seen == sorted(seen) and len(set(seen)) == 3
+    v._coi = COI_MAX                                 # ceiling wraps, never overflows
+    assert v._next_coi() == 1
+
+
 def test_send_taker_invalid_nonce_err_triggers_resync():
     v = signed_venue(result=(None, None,
                              "HTTP response body: code=21104 "
