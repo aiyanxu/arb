@@ -38,3 +38,11 @@ SOL:
   lighter-rh: SOL
   aster: SOLUSDT
   tradexyz: SOL
+# SK Hynix (~$1351). trade.xyz lists it as SKHX — NOT SKHYNIX, and its
+# separate SKHY market is a different asset (~$186). Neither entropy (io dex)
+# nor lighter-rh lists it at all.
+SKHYNIX:
+  lighter: SKHYNIXUSD
+  tradexyz: SKHX
+  aster: SKHYNIXUSDT
+  polymarket: SKHYNIX-USD
