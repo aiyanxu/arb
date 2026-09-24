@@ -1,7 +1,7 @@
 # symbol_map.yaml — 配置 symbol -> venue-native symbol 映射表
 #
 # 键 = config.yaml 中配置的 symbol（可被 --symbol 覆盖）；值 = 各 venue 的实际命名
-# venue 可选: entropy / lighter / lighter-rh / tradexyz / aster / polymarket
+# venue 可选: entropy / lighter / lighter-rh / tradexyz / aster / polymarket / ondo
 # 两条腿各自按自己的 venue 名解析（如 base=tradexyz 时查 tradexyz 键）
 # 未列出的 venue、未命中的 symbol 均沿用配置的 symbol
 # （键区分大小写、精确匹配；文件不存在视为空表）
@@ -24,6 +24,7 @@ BTC:
   aster: BTCUSD1
   tradexyz: BTC
   polymarket: BTC-USD
+  ondo: BTC-USD.P
 ETH:
   polymarket: ETH-USD
   entropy: ETH
@@ -46,3 +47,11 @@ SKHYNIX:
   tradexyz: SKHX
   aster: SKHYNIXUSDT
   polymarket: SKHYNIX-USD
+
+# ===== ondo =====
+# Ondo perps 命名形如 NVDA-USD.P（永续后缀 .P）。当 CLI symbol 与 Ondo 命名一致时
+# 可省略 ondo 键；不一致时按需映射，例如：
+#NVDA:
+#  ondo: NVDA-USD.P
+#  entropy: NVDA
+#  polymarket: NVDA-USD

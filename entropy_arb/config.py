@@ -38,10 +38,13 @@ ASTER_API_URL = "https://fapi.asterdex.com"  # V3 futures API
 ASTER_WS_URL = "wss://fstream.asterdex.com"
 POLYMARKET_API_URL = "https://api.perpetuals.polymarket.com"  # perps gateway
 POLYMARKET_WS_URL = "wss://ws.perpetuals.polymarket.com/v1/ws"
+ONDO_API_URL = "https://api.ondoperps.xyz"        # sandbox: api.ondoperps-sandbox.xyz
+ONDO_WS_URL = "wss://api.ondoperps.xyz/ws"        # sandbox: wss://api.ondoperps-sandbox.xyz/ws
 
 # Any venue can be either leg (base or hedge); the two legs must differ.
 # 任意 venue 均可作为 base 或 hedge 腿，但两条腿不能相同。
-VENUES = ("entropy", "lighter", "lighter-rh", "tradexyz", "aster", "polymarket")
+VENUES = ("entropy", "lighter", "lighter-rh", "tradexyz", "aster",
+          "polymarket", "ondo")
 DEFAULT_BASE_VENUE = "entropy"
 
 
@@ -88,6 +91,7 @@ VENUE_REGISTRY: Dict[str, VenueSpec] = {
                             LIGHTER_PROFILES["lighter-rh"]),
     "aster": VenueSpec("aster", "ASTER", "", 4.5, 120),
     "polymarket": VenueSpec("polymarket", "POLY", "", 4.0, 120),
+    "ondo": VenueSpec("ondo", "ONDO", "", 2.5, 120),
 }
 
 
@@ -138,6 +142,16 @@ class PolymarketCreds:
 
 
 @dataclass
+class OndoCreds:
+    key_id: Optional[str]             # includes the `ondoKeyId_` prefix
+    secret: Optional[str]             # includes the `ondoApiSecret_` prefix
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.key_id) and bool(self.secret)
+
+
+@dataclass
 class VenueConf:
     key: str                  # "base" | "hedge"
     kind: str                 # "hl" | "lighter" | "aster"
@@ -159,6 +173,8 @@ class VenueConf:
     aster_creds: Optional[AsterCreds] = None
     # polymarket
     polymarket_creds: Optional[PolymarketCreds] = None
+    # ondo
+    ondo_creds: Optional[OndoCreds] = None
 
 
 @dataclass
@@ -220,6 +236,9 @@ class Config:
                 return False
             if v.kind == "polymarket" and not (v.polymarket_creds
                                                and v.polymarket_creds.complete):
+                return False
+            if v.kind == "ondo" and not (v.ondo_creds
+                                         and v.ondo_creds.complete):
                 return False
         return True
 
@@ -416,7 +435,7 @@ def _leg_fee(role: str, venue: str, sec: dict) -> float:
     threshold systematically too loose — never let it pass silently)."""
     spec = VENUE_REGISTRY[venue]
     fee = float(sec.get("taker_fee_bps", spec.fee_bps))
-    if spec.kind in ("hl", "aster", "polymarket") and fee < spec.fee_bps:
+    if spec.kind in ("hl", "aster", "polymarket", "ondo") and fee < spec.fee_bps:
         raise ConfigError(
             f"{venue!r} charges ~{spec.fee_bps:.1f} bps taker but "
             f"{role}.taker_fee_bps is {fee} — the fee must not be configured "
@@ -480,6 +499,15 @@ def _make_leg(role: str, venue: str, raw: dict, symbol: str) -> VenueConf:
         return VenueConf(key=role, kind="polymarket", label=spec.label,
                          symbol=symbol, fee_bps=fee, cap_usd=cap,
                          orders_per_min=orders, polymarket_creds=creds)
+
+    if spec.kind == "ondo":
+        # API-key credential from the Ondo app (HMAC auth — no wallet, no
+        # SDK). Occupies at most one leg, so no hedge-variant env block.
+        creds = OndoCreds(_env_s("ONDO_API_KEY_ID"),
+                          _env_s("ONDO_API_SECRET"))
+        return VenueConf(key=role, kind="ondo", label=spec.label,
+                         symbol=symbol, fee_bps=fee, cap_usd=cap,
+                         orders_per_min=orders, ondo_creds=creds)
 
     if venue == "tradexyz":
         hc = HLCreds(_env_s("HL_PRIVATE_KEY_XYZ") or _env_s("HL_PRIVATE_KEY"),

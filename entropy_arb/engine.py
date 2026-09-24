@@ -33,6 +33,7 @@ from .recorder import MinuteRecorder
 from .venue_aster import AsterVenue
 from .venue_hl import HLVenue
 from .venue_lighter import LighterVenue
+from .venue_ondo import OndoVenue
 from .venue_polymarket import PolymarketVenue
 
 log = logging.getLogger("engine")
@@ -58,6 +59,8 @@ def make_venue(cfg, vc, session):
         v = AsterVenue(vc, session, cfg.settle_timeout_sec)
     elif vc.kind == "polymarket":
         v = PolymarketVenue(vc, session, cfg.settle_timeout_sec)
+    elif vc.kind == "ondo":
+        v = OndoVenue(vc, session, cfg.settle_timeout_sec)
     else:
         v = HLVenue(vc, cfg.hl_api_url, cfg.hl_ws_url,
                     session, cfg.settle_timeout_sec)
