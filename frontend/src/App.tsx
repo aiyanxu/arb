@@ -12,18 +12,22 @@ function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? ''
 }
 
-async function control(path: string): Promise<{ ok: boolean; status: number; detail?: string }> {
+async function control(path: string, body?: unknown): Promise<{ ok: boolean; status: number; detail?: string }> {
   const token = getToken()
   try {
     const r = await fetch(path, {
       method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     })
     if (r.ok) return { ok: true, status: r.status }
     let detail = `HTTP ${r.status}`
     try {
-      const body = await r.json()
-      if (typeof body.detail === 'string') detail = body.detail
+      const resp = await r.json()
+      if (typeof resp.detail === 'string') detail = resp.detail
     } catch { /* non-json error body */ }
     return { ok: false, status: r.status, detail }
   } catch (e) {
@@ -169,9 +173,70 @@ function Controls({ eng, flatten, onMsg }: {
   )
 }
 
+function ThresholdEditor({ current, onMsg, onDone }: {
+  current: Record<string, number> | undefined
+  onMsg: (m: string) => void
+  onDone: () => void
+}) {
+  const [vals, setVals] = useState({
+    midline_bps: current?.midline_bps ?? 0,
+    upper_bps: current?.upper_bps ?? 4,
+    lower_bps: current?.lower_bps ?? 4,
+  })
+  const [persist, setPersist] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const field = (k: 'midline_bps' | 'upper_bps' | 'lower_bps', label: string) => (
+    <label className="thr-field">
+      <span>{label}</span>
+      <input
+        type="number"
+        step="0.5"
+        value={vals[k]}
+        onChange={e => setVals(v => ({ ...v, [k]: Number(e.target.value) }))}
+      />
+    </label>
+  )
+
+  const apply = async () => {
+    setBusy(true)
+    const r = await control('/api/config/thresholds', { ...vals, persist })
+    setBusy(false)
+    if (r.ok) {
+      onMsg(`✓ thresholds applied${persist ? ' and persisted to config.yaml' : ''}`)
+      onDone()
+    } else {
+      onMsg(`✗ thresholds: ${r.detail}`)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onDone}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="card-title">edit thresholds (bps)</div>
+        <div className="thr-grid">
+          {field('midline_bps', 'midline_bps')}
+          {field('upper_bps', 'upper_bps')}
+          {field('lower_bps', 'lower_bps')}
+        </div>
+        <label className="thr-persist">
+          <input type="checkbox" checked={persist}
+            onChange={e => setPersist(e.target.checked)} />
+          <span>persist to config.yaml (survives restart)</span>
+        </label>
+        <div className="controls-row">
+          <button disabled={busy} onClick={apply}>apply</button>
+          <button onClick={onDone}>cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [sug, setSug] = useState<Suggestion | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
   const { snap: live, connected } = useLive()
 
   useEffect(() => {
@@ -268,7 +333,18 @@ export default function App() {
             </tbody>
           </table>
         )}
+        <div className="controls-row">
+          <button disabled={eng === null} onClick={() => setEditing(true)}>
+            edit thresholds
+          </button>
+          {eng === null && <span className="muted">needs an embedded engine</span>}
+        </div>
       </section>
+
+      {editing && (
+        <ThresholdEditor current={sug?.current} onMsg={setMsg}
+          onDone={() => setEditing(false)} />
+      )}
 
       {live && live.trades.length > 0 && (
         <section className="card">

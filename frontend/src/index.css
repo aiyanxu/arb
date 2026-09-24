@@ -117,3 +117,21 @@ button.danger:hover:not(:disabled) { border-color: var(--bad); }
   background: #0d1117; color: var(--text);
   border: 1px solid var(--border); border-radius: 6px; font: inherit;
 }
+
+.thr-grid {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 10px;
+}
+.thr-field {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.thr-field span { color: var(--muted, #8b949e); font-size: 13px; }
+.thr-field input {
+  width: 110px; margin-top: 0; padding: 6px 8px;
+  background: #0d1117; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font: inherit;
+}
+.thr-persist {
+  display: flex; align-items: center; gap: 8px; margin-top: 14px;
+  color: var(--muted, #8b949e); font-size: 13px;
+}
+.thr-persist input { width: auto; margin-top: 0; }

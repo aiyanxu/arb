@@ -8,7 +8,8 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from entropy_arb.config import ConfigError, load_config  # noqa: E402
+from entropy_arb.config import (  # noqa: E402
+    ConfigError, load_config, persist_thresholds)
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 EXAMPLE = os.path.join(ROOT, "config.example.yaml")
@@ -486,6 +487,73 @@ def test_symbol_map_polymarket():
                map_text="BTC:\n  polymarket: BTC-USD\n")
     assert cfg.hedge.symbol == "BTC-USD"
     assert cfg.base.symbol == "BTC"
+
+
+# ------------------------------------------------------- threshold persistence
+
+def test_persist_thresholds_roundtrip_and_comments_preserved():
+    yaml_text = (
+        "# leading comment\n"
+        "thresholds:\n"
+        "  midline_bps: 5.0     # center comment\n"
+        "  upper_bps: 4.0       # upper band\n"
+        "  lower_bps: 3.0\n"
+        "\n"
+        "sizing:\n"
+        "  take_fraction: 0.5\n"
+        "  # a comment below an unrelated line\n"
+    )
+    path = write_tmp(yaml_text)
+    cfg = load_config(path, NO_ENV, symbol="SNDK", base_venue="entropy",
+                      hedge_venue="lighter-rh", symbol_map_file=NO_MAP)
+    cfg.midline_bps = 2.5
+    cfg.upper_bps = 6.0
+    cfg.lower_bps = 4.25
+
+    persist_thresholds(cfg)
+
+    with open(path) as fh:
+        written = fh.read()
+    # values replaced, comments (and inline # comment) preserved
+    assert "midline_bps: 2.5     # center comment" in written
+    assert "upper_bps: 6       # upper band" in written
+    assert "lower_bps: 4.25\n" in written
+    # unrelated lines untouched
+    assert "take_fraction: 0.5" in written
+    assert "# a comment below an unrelated line" in written
+    assert "# leading comment" in written
+    # and the result loads cleanly with the new values
+    cfg2 = load_config(path, NO_ENV, symbol="SNDK", base_venue="entropy",
+                       hedge_venue="lighter-rh", symbol_map_file=NO_MAP)
+    assert cfg2.midline_bps == 2.5 and cfg2.upper_bps == 6.0
+    assert cfg2.lower_bps == 4.25
+
+
+def test_persist_thresholds_integral_and_fractional_format():
+    yaml_text = ("thresholds:\n  midline_bps: 5.0\n  upper_bps: 4.0\n"
+                 "  lower_bps: 3.0\n")
+    path = write_tmp(yaml_text)
+    cfg = load_config(path, NO_ENV, symbol="SNDK", base_venue="entropy",
+                      hedge_venue="lighter-rh", symbol_map_file=NO_MAP)
+    cfg.midline_bps = 0.0
+    cfg.upper_bps = 4.5
+    persist_thresholds(cfg)
+    with open(path) as fh:
+        written = fh.read()
+    assert "midline_bps: 0\n" in written
+    assert "upper_bps: 4.5" in written
+
+
+def test_persist_thresholds_missing_block_raises():
+    # a Config whose file has no thresholds: block -> OSError, not a no-op
+    path = write_tmp("sizing:\n  take_fraction: 0.5\n")
+    cfg = load_config(write_tmp(MINIMAL), NO_ENV, symbol="SNDK",
+                      base_venue="entropy", hedge_venue="lighter-rh",
+                      symbol_map_file=NO_MAP)
+    cfg.config_path = path
+    import pytest
+    with pytest.raises(OSError, match="thresholds block not found"):
+        persist_thresholds(cfg)
 
 
 if __name__ == "__main__":

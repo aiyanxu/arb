@@ -54,6 +54,7 @@ class StubEngine:
         self.hedge = StubVenue("hedge", "RH")
         self.venues = {"base": self.base, "hedge": self.hedge}
         self.stop = asyncio.Event()
+        self._update_evt = asyncio.Event()
         self.record_only = True
         self.halted = False
         self.paused = False
@@ -291,6 +292,139 @@ def test_flatten_status_without_engine():
     with TestClient(make_app(make_cfg(), engine=None)) as c:
         body = c.get("/api/flatten/status").json()
         assert body == {"running": False, "state": None}
+
+
+# -------------------------------------------------------- threshold hot-update
+
+def test_thresholds_update_with_token():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        cfg = make_cfg()
+        eng = StubEngine()
+        eng.cfg = cfg
+        with TestClient(make_app(cfg, engine=eng)) as c:
+            auth = {"Authorization": "Bearer sekrit"}
+            r = c.post("/api/config/thresholds", json={"upper_bps": 6.5,
+                                                       "lower_bps": 3.0},
+                       headers=auth)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["previous"]["upper_bps"] == 4.0
+            assert body["current"] == {"midline_bps": 5.0,
+                                       "upper_bps": 6.5, "lower_bps": 3.0}
+            # applied in place on the shared Config
+            assert cfg.upper_bps == 6.5 and cfg.lower_bps == 3.0
+            # midline untouched when absent
+            assert cfg.midline_bps == 5.0
+            # /api/config reflects the new values immediately
+            assert c.get("/api/config").json()["thresholds"]["upper_bps"] == 6.5
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_thresholds_update_partial_set_is_atomic_dataclass():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        cfg = make_cfg()
+        eng = StubEngine()
+        eng.cfg = cfg
+        with TestClient(make_app(cfg, engine=eng)) as c:
+            auth = {"Authorization": "Bearer sekrit"}
+            # only midline changes; band values stay
+            r = c.post("/api/config/thresholds", json={"midline_bps": 2.0},
+                       headers=auth)
+            assert r.status_code == 200
+            assert cfg.midline_bps == 2.0
+            assert cfg.upper_bps == 4.0 and cfg.lower_bps == 4.0
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_thresholds_update_validation():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        cfg = make_cfg()
+        eng = StubEngine()
+        eng.cfg = cfg
+        with TestClient(make_app(cfg, engine=eng)) as c:
+            auth = {"Authorization": "Bearer sekrit"}
+            # unknown key
+            assert c.post("/api/config/thresholds",
+                          json={"nope": 1}, headers=auth).status_code == 400
+            # non-numeric / bool
+            assert c.post("/api/config/thresholds",
+                          json={"upper_bps": "4"}, headers=auth).status_code == 400
+            assert c.post("/api/config/thresholds",
+                          json={"upper_bps": True}, headers=auth).status_code == 400
+            # band must stay positive
+            assert c.post("/api/config/thresholds",
+                          json={"upper_bps": -1}, headers=auth).status_code == 400
+            # nothing mutated on any rejected request
+            assert cfg.upper_bps == 4.0
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_thresholds_update_requires_auth_and_engine():
+    # no token
+    eng = StubEngine()
+    eng.cfg = make_cfg()
+    with TestClient(make_app(make_cfg(), engine=eng)) as c:
+        assert c.post("/api/config/thresholds",
+                      json={"upper_bps": 6.5}).status_code == 403
+    # token but no in-process engine (artifact mode)
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        with TestClient(make_app(make_cfg(), engine=None)) as c:
+            r = c.post("/api/config/thresholds", json={"upper_bps": 6.5},
+                       headers={"Authorization": "Bearer sekrit"})
+            assert r.status_code == 409
+            assert "no engine" in r.json()["detail"]
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_thresholds_update_persists_to_config_file():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        cfg = make_cfg()
+        eng = StubEngine()
+        eng.cfg = cfg
+        with TestClient(make_app(cfg, engine=eng)) as c:
+            auth = {"Authorization": "Bearer sekrit"}
+            r = c.post("/api/config/thresholds",
+                       json={"upper_bps": 7.5, "persist": True}, headers=auth)
+            assert r.status_code == 200, r.text
+            assert r.json()["persisted"] is True
+        # the yaml on disk now carries the new value (atomically replaced)
+        with open(cfg.config_path) as fh:
+            assert "upper_bps: 7.5" in fh.read()
+        # a restart (fresh load) sees it too
+        cfg2 = load_config(cfg.config_path, NO_ENV, symbol="SNDK",
+                           hedge_venue="lighter-rh")
+        assert cfg2.upper_bps == 7.5
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
+
+
+def test_thresholds_update_without_persist_leaves_file_alone():
+    os.environ["ARB_WEB_TOKEN"] = "sekrit"
+    try:
+        cfg = make_cfg()
+        eng = StubEngine()
+        eng.cfg = cfg
+        before = open(cfg.config_path).read()
+        with TestClient(make_app(cfg, engine=eng)) as c:
+            auth = {"Authorization": "Bearer sekrit"}
+            r = c.post("/api/config/thresholds", json={"upper_bps": 9.0},
+                       headers=auth)
+            assert r.status_code == 200
+            assert r.json()["persisted"] is False
+        # in-memory change applied, but the file is untouched
+        assert cfg.upper_bps == 9.0
+        assert open(cfg.config_path).read() == before
+    finally:
+        os.environ.pop("ARB_WEB_TOKEN", None)
 
 
 if __name__ == "__main__":

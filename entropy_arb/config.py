@@ -26,6 +26,7 @@ numbers must be re-measured, they do not transfer):
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -222,6 +223,9 @@ class Config:
     # runtime
     hl_api_url: str = HL_API_URL
     hl_ws_url: str = HL_WS_URL
+    # where config.yaml came from, so a hot-update can persist back to the
+    # same file (None when constructed without a file, e.g. tests)
+    config_path: Optional[str] = None
 
     @property
     def creds_complete(self) -> bool:
@@ -639,7 +643,74 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         dashboard=bool(_get(raw, "logging", "dashboard", True)),
         log_file=_get(raw, "logging", "file", "logs/engine.log"),
         threshold_check=dict(raw.get("threshold_check") or {}),
+        config_path=config_file,
     )
+
+
+_THRESHOLD_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<key>midline_bps|upper_bps|lower_bps)\s*:\s*"
+    r"(?P<value>\S+)(?P<sep>\s*)(?P<tail>#.*)?$")
+
+
+def persist_thresholds(cfg: Config) -> str:
+    """Write the three thresholds back to the config file, comment-preserving.
+
+    Config was loaded from `cfg.config_path`; this rewrites ONLY the
+    midline_bps / upper_bps / lower_bps lines inside the top-level
+    `thresholds:` block, leaving every comment and every other line intact
+    (a straight yaml.safe_dump would strip the file's inline comments). The
+    values are formatted the way load_config wants them, so a restart reloads
+    exactly what is running now.
+
+    Raises OSError if the file is gone/unwritable or the thresholds block
+    can't be located. Returns the path written (for logging).
+    """
+    path = cfg.config_path
+    if not path:
+        raise OSError("no config file path recorded on this Config")
+    with open(path) as fh:
+        lines = fh.readlines()
+
+    want = {"midline_bps": cfg.midline_bps, "upper_bps": cfg.upper_bps,
+            "lower_bps": cfg.lower_bps}
+    in_thresholds = False
+    hits = 0
+    for i, line in enumerate(lines):
+        m = _THRESHOLD_RE.match(line)
+        if m is None:
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#"):
+                continue                     # blank/comment — no scope change
+            if re.match(r"^thresholds\s*:\s*(?:#.*)?$", line):
+                in_thresholds = True         # enter the thresholds: block
+            elif not line[0].isspace():
+                in_thresholds = False        # any other top-level key exits
+            continue
+        if not in_thresholds:
+            continue                         # same key names elsewhere
+        key = m.group("key")
+        if key not in want:
+            continue
+        lines[i] = f"{m.group('indent')}{key}: {_fmt_bps(want[key])}" \
+                   f"{m.group('sep')}{m.group('tail') or ''}\n"
+        hits += 1
+    if hits != 3:
+        raise OSError(
+            f"config file '{path}' thresholds block not found — expected 3 "
+            f"threshold keys, matched {hits}")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.writelines(lines)
+    os.replace(tmp, path)          # atomic — a reader never sees a half file
+    return path
+
+
+def _fmt_bps(v: float) -> str:
+    """Format a threshold the way a user would: integral floats drop the
+    decimal, fractions keep the shortest non-lossy representation."""
+    if v == int(v):
+        return str(int(v))
+    return repr(v)
 
 
 def analyze_defaults_from_config(

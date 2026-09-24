@@ -2,11 +2,12 @@
 
 Serves the built React app (frontend/ -> webapp/static) and a JSON API:
 live state, recent trades, minute bars, and the analyzer's threshold
-suggestion. Risk-reducing control endpoints (pause / resume / flatten the
-embedded engine) exist but are DISABLED until ARB_WEB_TOKEN is set in the
-env file — requests then must carry `Authorization: Bearer <token>`. No
-endpoint can open a position: flatten is reduce-only, pause/resume only
-gate the strategy loop. Credential data never leaves the process.
+suggestion, plus a live threshold hot-update. Risk-reducing control endpoints
+(pause / resume / flatten / set thresholds the embedded engine) exist but are
+DISABLED until ARB_WEB_TOKEN is set in the env file — requests then must carry
+`Authorization: Bearer <token>`. No endpoint can open a position: flatten is
+reduce-only, pause/resume only gate the strategy loop, the threshold update
+only moves band numbers. Credential data never leaves the process.
 
 Data sources:
   * an Engine running in-process (`entropy-arb web` starts one) — live
@@ -38,7 +39,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, \
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from ..config import Config
+from ..config import Config, persist_thresholds
 
 log = logging.getLogger("web")
 
@@ -326,6 +327,70 @@ def make_app(cfg: Config, engine=None) -> FastAPI:
             raise HTTPException(409, "engine is HALTED — resume refused; "
                                      "flatten and restart")
         return {"ok": True, "paused": False}
+
+    @web.post("/api/config/thresholds")
+    async def thresholds_update(req: Request):
+        """Hot-update the strategy thresholds mid-run. Validates and applies
+        the provided keys in place on the shared Config, then pokes the
+        strategy loop so the next evaluation uses them immediately (the
+        engine reads them on every scan — no restart, no venue rebuild).
+
+        POST (not PATCH): the CORS allow-list and every other control
+        endpoint are POST. Without `persist`, the change is in-memory only
+        and a restart reverts to config.yaml; with `"persist": true` it is
+        also written back to config.yaml (comment-preserving) so a restart
+        reloads exactly what is running now."""
+        eng = _authed(req)
+        try:
+            body = await req.json()
+        except Exception:
+            raise HTTPException(400, "body must be a JSON object")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be a JSON object")
+        keys = ("midline_bps", "upper_bps", "lower_bps")
+        unknown = [k for k in body if k not in keys and k != "persist"]
+        if unknown:
+            raise HTTPException(400, f"unknown key(s): {', '.join(unknown)}")
+        persist = body.get("persist", False)
+        if not isinstance(persist, bool):
+            raise HTTPException(400, "persist must be a boolean")
+        new: dict = {}
+        for k in keys:
+            if k in body:
+                v = body[k]
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    raise HTTPException(400, f"{k} must be a number")
+                new[k] = float(v)
+        if not new:
+            raise HTTPException(400, "no threshold keys provided")
+        # same validity rules load_config enforces for the band
+        if new.get("upper_bps", 1.0) <= 0:
+            raise HTTPException(400, "upper_bps must be > 0")
+        if new.get("lower_bps", 1.0) <= 0:
+            raise HTTPException(400, "lower_bps must be > 0")
+        prev = {k: getattr(cfg, k) for k in keys}
+        # no await between these assigns → the engine reads all three as one
+        # atomic group under the asyncio event loop (never a half-applied set)
+        for k, v in new.items():
+            setattr(cfg, k, v)
+        eng._update_evt.set()  # a queued opportunity can fire at the new band
+        current = {k: getattr(cfg, k) for k in keys}
+        log.warning("thresholds updated via control API: %s -> %s%s", prev,
+                    current, " (persisted)" if persist else "")
+        if persist:
+            try:
+                persist_thresholds(cfg)
+            except OSError as e:
+                # hot-update already applied in memory; report the persistence
+                # failure but don't fail the whole request — the strategy is
+                # already running the new band, only the restart durability is
+                # unavailable
+                log.error("threshold persist failed: %r", e)
+                return {"ok": True, "previous": prev, "current": current,
+                        "persisted": False,
+                        "persist_error": str(e)}
+        return {"ok": True, "previous": prev, "current": current,
+                "persisted": persist}
 
     @web.post("/api/positions/flatten")
     async def positions_flatten(req: Request):
