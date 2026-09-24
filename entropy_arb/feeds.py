@@ -313,10 +313,16 @@ class OndoBookFeed:
         if msg.get("type") != "update" or \
                 msg.get("channel") != "depthBooksPerps":
             return                    # subscribed acks, pongs, other channels
-        data = msg.get("data") or {}
-        if str(data.get("market")) != self.symbol:
-            return                    # we subscribe to one market only
-        self.book.apply_aster(data.get("bids") or [], data.get("asks") or [])
+        data = msg.get("data")
+        if not isinstance(data, list):
+            return                    # envelope says data is an array
+        # one BookSnapshot per market; take ours (we subscribe to one symbol)
+        snap = next((s for s in data
+                     if isinstance(s, dict)
+                     and str(s.get("market")) == self.symbol), None)
+        if snap is None:
+            return
+        self.book.apply_aster(snap.get("bids") or [], snap.get("asks") or [])
         if not self._snapped:
             self._snapped = True
             log.info("[%s] snapshot: %d bids / %d asks", self.name,

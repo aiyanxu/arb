@@ -434,19 +434,19 @@ def test_feed_frame_handling():
     feed = OndoBookFeed("ONDO", "wss://x", "NVDA-USD.P", b,
                         lambda: notified.append(1))
     feed._on_frame({"type": "update", "channel": "depthBooksPerps",
-                    "data": {"market": "NVDA-USD.P",
-                             "bids": [["10", "1"]], "asks": [["11", "1"]]}})
+                    "data": [{"market": "NVDA-USD.P",
+                              "bids": [["10", "1"]], "asks": [["11", "1"]]}]})
     assert b.best_bid() == 10.0 and b.best_ask() == 11.0
     feed._on_frame({"type": "subscribed", "channel": "depthBooksPerps",
-                    "data": {}})                  # ack → ignored
+                    "data": []})                  # ack → ignored
     assert len(notified) == 1
     feed._on_frame({"type": "update", "channel": "depthBooksPerps",
-                    "data": {"market": "AAPL-USD.P",    # other market
-                             "bids": [], "asks": []}})
+                    "data": [{"market": "AAPL-USD.P",    # other market
+                              "bids": [], "asks": []}]})
     assert len(notified) == 1
     feed._on_frame({"type": "update", "channel": "depthBooksPerps",
-                    "data": {"market": "NVDA-USD.P",
-                             "bids": [["9", "1"]], "asks": []}})  # rebuild
+                    "data": [{"market": "NVDA-USD.P",
+                              "bids": [["9", "1"]], "asks": []}]})  # rebuild
     assert b.best_bid() == 9.0 and b.best_ask() is None
     assert len(notified) == 2
 
