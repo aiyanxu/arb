@@ -111,7 +111,7 @@ async def check_once(cfg) -> bool:
     from . import notify
     db = cfg.recorder_db
     if not os.path.exists(db):
-        log.debug("threshold check: %s does not exist yet", db)
+        log.info("threshold check: %s does not exist yet", db)
         return False
     try:
         from .analyze import load_rows
@@ -134,7 +134,7 @@ async def check_once(cfg) -> bool:
                "lower_bps": cfg.lower_bps}
     drifted = drift_report(current, sug, cfg.threshold_check_tolerance)
     if not drifted:
-        log.debug("threshold check: config within tolerance")
+        log.info("threshold check: config within tolerance")
         return False
     pair = f"{cfg.base_venue}×{cfg.hedge_venue}"
     report = format_drift_report(cfg.symbol, pair, current, sug, drifted)
